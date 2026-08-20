@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-950: #0c0a09;
+  --color-ink-900: #161311;
+  --color-ink-850: #1d1916;
+  --color-ink-800: #26211d;
+  --color-ink-700: #37302a;
+  --color-ink-600: #4d443c;
+  --color-ink-400: #8a7d70;
+  --color-ink-300: #a89a8b;
+  --color-ink-200: #cfc4b8;
+  --color-ink-100: #e8e1d8;
+  --color-paper: #efe9e1;
+  --color-accent-600: #b45309;
+  --color-accent-500: #d97706;
+  --color-accent-400: #f59e0b;
+  --font-serif-zh: "Noto Serif SC", "Source Han Serif SC", "Songti SC",
+    SimSun, serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-ink-700);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-ink-600);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* CodeMirror 融入暗色界面 */
+.cm-editor {
+  height: 100%;
+  font-size: 16px;
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-scroller {
+  font-family: var(--font-serif-zh);
+  line-height: 2;
+}
+.cm-content {
+  padding: 2rem 0 40vh;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.cm-line {
+  padding-left: 0;
+}
