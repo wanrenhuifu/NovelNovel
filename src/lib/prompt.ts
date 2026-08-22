@@ -170,14 +170,32 @@ export function buildSystemPrompt(
   return sections.join("\n\n");
 }
 
-/** 续写场景：把最近正文与指令拼成一条 user 消息 */
+/** 前文章节摘录（续写上下文用） */
+export interface PrevChapterExcerpt {
+  title: string;
+  text: string;
+}
+
+/**
+ * 续写场景：把前文章节摘录、最近正文与指令拼成一条 user 消息。
+ * 前文按传入顺序排列（由远及近），最后才是当前章节结尾。
+ * 不带前文时输出与旧版完全一致（CONTINUE_SENTINEL 依赖此稳定性）。
+ */
 export function buildContinueUserMessage(
   recentText: string,
   instruction: string,
+  prevChapters: PrevChapterExcerpt[] = [],
 ): string {
   const lines: string[] = [];
+  const prev = prevChapters.filter((c) => c.text.trim());
+  if (prev.length > 0) {
+    lines.push("为保持情节连贯，以下是前面章节的结尾摘录，供参考：");
+    for (const c of prev) {
+      lines.push(`【${c.title.trim() || "前文章节"}】`, "```", c.text.trim(), "```");
+    }
+  }
   if (recentText.trim()) {
-    lines.push("以下是已有正文的结尾部分，请从其后无缝续写：");
+    lines.push("以下是当前章节已有正文的结尾部分，请从其后无缝续写：");
     lines.push("```");
     lines.push(recentText.trim());
     lines.push("```");
@@ -188,4 +206,24 @@ export function buildContinueUserMessage(
     lines.push("请直接续写接下来的情节。");
   }
   return lines.join("\n\n");
+}
+
+/**
+ * 按轮数截断聊天历史：最多保留最近 maxTurns 轮
+ * （一条 user 消息及其后续 assistant 回复算一轮，从 user 消息处截断保证配对完整）。
+ * maxTurns <= 0 表示全部携带。
+ */
+export function trimChatHistory<T extends { role: string }>(
+  history: T[],
+  maxTurns: number,
+): T[] {
+  if (maxTurns <= 0) return history;
+  let userCount = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "user") {
+      userCount++;
+      if (userCount >= maxTurns) return history.slice(i);
+    }
+  }
+  return history;
 }

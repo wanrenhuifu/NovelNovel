@@ -11,7 +11,7 @@ await esbuild.build({
   stdin: {
     contents: [
       'export { parsePresetFile } from "./src/lib/presetImport";',
-      'export { buildSystemPrompt, renderStoryString } from "./src/lib/prompt";',
+      'export { buildSystemPrompt, renderStoryString, buildContinueUserMessage, trimChatHistory } from "./src/lib/prompt";',
     ].join("\n"),
     resolveDir: process.cwd(),
     loader: "ts",
@@ -21,9 +21,13 @@ await esbuild.build({
   platform: "node",
   outfile: outFile,
 });
-const { parsePresetFile, buildSystemPrompt, renderStoryString } = await import(
-  pathToFileURL(outFile).href
-);
+const {
+  parsePresetFile,
+  buildSystemPrompt,
+  renderStoryString,
+  buildContinueUserMessage,
+  trimChatHistory,
+} = await import(pathToFileURL(outFile).href);
 
 let failed = 0;
 function check(label, ok, extra = "") {
@@ -179,6 +183,80 @@ check("预设: 默认区块被替换", !withPreset.includes("## 作品简介") &
 const withoutPreset = buildSystemPrompt(project, characters, "", null);
 check("无预设: 默认开场白", withoutPreset.includes("正在创作长篇小说《长安落雪》"));
 check("无预设: 默认区块齐全", withoutPreset.includes("## 作品简介") && withoutPreset.includes("## 主要角色设定"));
+
+// ---- 8. buildContinueUserMessage：前文章节块 ----
+// 哨兵稳定性：ChatPanel 依赖空参输出不变来识别续写消息
+check(
+  "续写哨兵稳定（空参输出不变）",
+  buildContinueUserMessage("", "") === "请直接续写接下来的情节。",
+);
+
+const onlyRecent = buildContinueUserMessage("夜色渐深。", "");
+check("无前文: 只含当前章节结尾块", onlyRecent.includes("以下是当前章节已有正文的结尾部分") && onlyRecent.includes("夜色渐深。"));
+check("无前文: 不含前文引导语", !onlyRecent.includes("前面章节"));
+
+const withPrev = buildContinueUserMessage("夜色渐深。", "", [
+  { title: "第一章 雪夜", text: "长安落了大雪。" },
+  { title: "第二章 刺客", text: "刀光一闪。" },
+]);
+check("带前文: 引导语在前", withPrev.indexOf("前面章节的结尾摘录") < withPrev.indexOf("当前章节"));
+check("带前文: 章节按由远及近排列", withPrev.indexOf("第一章 雪夜") < withPrev.indexOf("第二章 刺客"));
+check("带前文: 摘录内容完整", withPrev.includes("长安落了大雪。") && withPrev.includes("刀光一闪。"));
+check("带前文: 当前章节结尾仍在最后", withPrev.lastIndexOf("夜色渐深。") > withPrev.lastIndexOf("刀光一闪。"));
+
+const emptyPrevFiltered = buildContinueUserMessage("正文。", "", [
+  { title: "空章", text: "   " },
+  { title: "有内容", text: "摘要。" },
+]);
+check("空内容前文章节被过滤", !emptyPrevFiltered.includes("空章") && emptyPrevFiltered.includes("摘要。"));
+
+const prevNoRecent = buildContinueUserMessage("", "", [{ title: "上一章", text: "结尾。" }]);
+check("有前文无当前正文: 仍携带前文", prevNoRecent.includes("结尾。") && prevNoRecent.includes("请直接续写"));
+
+// ---- 9. trimChatHistory：按轮数截断对话 ----
+const roles = (list) => list.map((m) => m.role).join(",");
+const mkHist = () => [
+  { role: "user", content: "u1" },
+  { role: "assistant", content: "a1" },
+  { role: "user", content: "u2" },
+  { role: "assistant", content: "a2" },
+  { role: "user", content: "u3" },
+  { role: "assistant", content: "a3" },
+];
+
+check("maxTurns=0: 全部携带", trimChatHistory(mkHist(), 0).length === 6);
+check("maxTurns 为负: 全部携带", trimChatHistory(mkHist(), -1).length === 6);
+check("轮数多于历史: 全部携带", trimChatHistory(mkHist(), 99).length === 6);
+
+const t1 = trimChatHistory(mkHist(), 1);
+check("maxTurns=1: 只留最后一轮", roles(t1) === "user,assistant" && t1[0].content === "u3");
+const t2 = trimChatHistory(mkHist(), 2);
+check("maxTurns=2: 留最后两轮", roles(t2) === "user,assistant,user,assistant" && t2[0].content === "u2");
+
+// 末尾是 user（assistant 还在流式中）：截断同样从 user 对齐
+const dangling = [...mkHist(), { role: "user", content: "u4" }];
+const td = trimChatHistory(dangling, 1);
+check("末尾悬空 user: 从该 user 截断", roles(td) === "user" && td[0].content === "u4");
+
+// 连续 assistant（重新生成产生的多条回复）：仍按 user 消息计轮
+const multiAssistant = [
+  { role: "user", content: "u1" },
+  { role: "assistant", content: "a1" },
+  { role: "assistant", content: "a1-regen" },
+  { role: "user", content: "u2" },
+  { role: "assistant", content: "a2" },
+];
+const tm = trimChatHistory(multiAssistant, 2);
+check("多条 assistant: 按 user 计轮", tm[0].content === "u1" && tm.length === 5);
+
+// 开头悬空 assistant（其 user 已被更早的截断切掉）：应随截断丢弃
+const orphan = [
+  { role: "assistant", content: "orphan" },
+  { role: "user", content: "u1" },
+  { role: "assistant", content: "a1" },
+];
+const to = trimChatHistory(orphan, 1);
+check("开头悬空 assistant: 被切掉", roles(to) === "user,assistant" && to[0].content === "u1");
 
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

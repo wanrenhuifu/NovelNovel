@@ -1,17 +1,26 @@
-import { useState } from "react";
-import { Feather, Plus, Trash2, BookOpenText, Settings, Download, BookMarked, DatabaseBackup } from "lucide-react";
+import { lazy, Suspense, useState } from "react";
+import { Feather, Plus, Trash2, BookOpenText, Settings, Download, BookMarked, DatabaseBackup, Search } from "lucide-react";
 import { useProjectStore, useActiveProject } from "../../stores/project";
 import { ProjectSettingsModal } from "../projects/ProjectSettingsModal";
 import { NewProjectModal } from "../projects/NewProjectModal";
 import { ExportModal } from "../projects/ExportModal";
 import { LorebookModal } from "../projects/LorebookModal";
-import { BackupModal } from "../projects/BackupModal";
+
+// 按需加载：备份内含全量数据序列化，搜索仅在打开时需要
+const BackupModal = lazy(() =>
+  import("../projects/BackupModal").then((m) => ({ default: m.BackupModal })),
+);
+const SearchModal = lazy(() =>
+  import("../projects/SearchModal").then((m) => ({ default: m.SearchModal })),
+);
 
 interface Props {
   openAppSettings: () => void;
+  /** 搜索命中后跳转到章节并定位正文位置 */
+  jumpToChapter: (chapterId: number, pos: number | null) => void;
 }
 
-export function TopBar({ openAppSettings }: Props) {
+export function TopBar({ openAppSettings, jumpToChapter }: Props) {
   const projects = useProjectStore((s) => s.projects);
   const chapters = useProjectStore((s) => s.chapters);
   const activeProject = useActiveProject();
@@ -23,6 +32,7 @@ export function TopBar({ openAppSettings }: Props) {
   const [showExport, setShowExport] = useState(false);
   const [showLorebook, setShowLorebook] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const handleNew = async (title: string) => {
@@ -83,6 +93,13 @@ export function TopBar({ openAppSettings }: Props) {
               title="世界观 Lorebook（设定词条，按关键词注入 AI）"
             >
               <BookMarked size={14} /> Lorebook
+            </button>
+            <button
+              onClick={() => setShowSearch(true)}
+              className="flex items-center gap-1 rounded-md border border-ink-600 px-2.5 py-1.5 text-xs text-ink-200 hover:bg-ink-700"
+              title="全文搜索章节标题与正文"
+            >
+              <Search size={14} /> 搜索
             </button>
             <button
               onClick={() => setShowExport(true)}
@@ -147,7 +164,19 @@ export function TopBar({ openAppSettings }: Props) {
           onClose={() => setShowLorebook(false)}
         />
       )}
-      {showBackup && <BackupModal onClose={() => setShowBackup(false)} />}
+      {showBackup && (
+        <Suspense fallback={null}>
+          <BackupModal onClose={() => setShowBackup(false)} />
+        </Suspense>
+      )}
+      {showSearch && activeProject && (
+        <Suspense fallback={null}>
+          <SearchModal
+            onClose={() => setShowSearch(false)}
+            onJump={jumpToChapter}
+          />
+        </Suspense>
+      )}
     </header>
   );
 }

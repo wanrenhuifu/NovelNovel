@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { db } from "../lib/db";
 import type { Chapter, Project } from "../types";
+import { computeReorder } from "../lib/reorder";
 
 interface ProjectState {
   projects: Project[];
@@ -17,9 +18,19 @@ interface ProjectState {
 
   createChapter: (projectId: number, title?: string) => Promise<number>;
   renameChapter: (id: number, title: string) => Promise<void>;
+  /** 给章节添加标签（重复标签忽略） */
+  addChapterTag: (id: number, tag: string) => Promise<void>;
+  /** 从章节移除标签 */
+  removeChapterTag: (id: number, tag: string) => Promise<void>;
   deleteChapter: (id: number) => Promise<void>;
   /** 上移 / 下移章节（dir 为 -1 / 1） */
   moveChapter: (id: number, dir: -1 | 1) => Promise<void>;
+  /** 拖拽章节到目标位置（position = before/after 目标 id） */
+  reorderChapters: (
+    dragId: number,
+    targetId: number,
+    position: "before" | "after",
+  ) => Promise<void>;
   saveChapterContent: (id: number, content: string) => Promise<void>;
   setActiveChapter: (id: number | null) => Promise<void>;
 }
@@ -103,11 +114,39 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       content: "",
       sortOrder: maxOrder + 1,
       updatedAt: Date.now(),
+      tags: [],
     });
     if (get().activeProjectId === projectId) {
       set({ chapters: await loadChapters(projectId) });
     }
     return id;
+  },
+
+  /** 给章节添加标签（重复标签忽略） */
+  async addChapterTag(id, tag) {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+    const chapter = await db.chapters.get(id);
+    if (!chapter) return;
+    if (chapter.tags.includes(trimmed)) return;
+    await db.chapters.update(id, {
+      tags: [...chapter.tags, trimmed],
+      updatedAt: Date.now(),
+    });
+    const projectId = get().activeProjectId;
+    if (projectId != null) set({ chapters: await loadChapters(projectId) });
+  },
+
+  /** 从章节移除标签 */
+  async removeChapterTag(id, tag) {
+    const chapter = await db.chapters.get(id);
+    if (!chapter) return;
+    await db.chapters.update(id, {
+      tags: chapter.tags.filter((t) => t !== tag),
+      updatedAt: Date.now(),
+    });
+    const projectId = get().activeProjectId;
+    if (projectId != null) set({ chapters: await loadChapters(projectId) });
   },
 
   async renameChapter(id, title) {
@@ -131,6 +170,16 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     set({ chapters: await loadChapters(projectId) });
   },
 
+  async reorderChapters(dragId, targetId, position) {
+    const projectId = get().activeProjectId;
+    if (projectId == null) return;
+    const list = await loadChapters(projectId);
+    const reordered = computeReorder(list, dragId, targetId, position);
+    if (!reordered) return;
+    await db.chapters.bulkPut(reordered);
+    set({ chapters: reordered });
+  },
+
   async deleteChapter(id) {
     await db.chapters.delete(id);
     const projectId = get().activeProjectId;
@@ -143,7 +192,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   async saveChapterContent(id, content) {
-    await db.chapters.update(id, { content, updatedAt: Date.now() });
+    const updatedAt = Date.now();
+    await db.chapters.update(id, { content, updatedAt });
+    // 同步刷新 store，否则续写取前文时会用到旧快照
+    set({
+      chapters: get().chapters.map((c) => (c.id === id ? { ...c, content, updatedAt } : c)),
+    });
   },
 
   async setActiveChapter(id) {

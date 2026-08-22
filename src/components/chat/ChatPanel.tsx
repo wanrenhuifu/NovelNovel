@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   Sparkles,
   Send,
@@ -8,8 +8,13 @@ import {
   Bot,
   Settings2,
   RefreshCw,
+  Eraser,
+  Copy,
+  Check,
+  Eye,
+  Repeat,
 } from "lucide-react";
-import { useActiveProject } from "../../stores/project";
+import { useActiveProject, useProjectStore } from "../../stores/project";
 import { useCharacterStore } from "../../stores/characters";
 import {
   useSettingsStore,
@@ -20,28 +25,44 @@ import { generateStream, type ChatMessage } from "../../lib/ai";
 import {
   buildSystemPrompt,
   buildContinueUserMessage,
+  trimChatHistory,
+  type PrevChapterExcerpt,
 } from "../../lib/prompt";
 import { db } from "../../lib/db";
 import { uid } from "../../lib/utils";
 import type { ChatMessageStored } from "../../types";
+import { ContextPreviewModal } from "./ContextPreviewModal";
 
 interface Props {
   getEditorContent: () => string;
+  /** 获取编辑器当前选区文本（无选区返回空串） */
+  getSelection: () => string;
   insertAtEnd: (text: string) => void;
   replaceSelection: (text: string) => void;
   openSettings: () => void;
 }
 
+export interface ChatPanelHandle {
+  /** 触发一个指令模板（由编辑器右键菜单调用） */
+  applyTemplate: (content: string) => void;
+}
+
 /** 续写哨兵：userText 等于它时，消息内容在组装请求时用最新正文重建 */
 const CONTINUE_SENTINEL = buildContinueUserMessage("", "");
 
-export function ChatPanel({
-  getEditorContent,
-  insertAtEnd,
-  replaceSelection,
-  openSettings,
-}: Props) {
+export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
+  {
+    getEditorContent,
+    getSelection,
+    insertAtEnd,
+    replaceSelection,
+    openSettings,
+  },
+  ref,
+) {
   const project = useActiveProject();
+  const chapters = useProjectStore((s) => s.chapters);
+  const activeChapterId = useProjectStore((s) => s.activeChapterId);
   const characters = useCharacterStore((s) => s.characters);
   const settings = useSettingsStore((s) => s.settings);
   const provider = useActiveProvider();
@@ -52,12 +73,34 @@ export function ChatPanel({
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; waitMs: number } | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showContext, setShowContext] = useState(false);
+  const [autoActive, setAutoActive] = useState(false);
+  const [autoCountdown, setAutoCountdown] = useState<number | null>(null);
   const abortRef = useRef<{ abort: () => void } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 自动续写：finally 需要读最新 active 标志，state 更新是异步的所以用 ref 同步
+  const autoActiveRef = useRef(false);
+  const autoRunTimerRef = useRef<number | null>(null);
+  const autoCountdownTimerRef = useRef<number | null>(null);
+
+  // 同步 ref 与 state，保证 finally 能读到最新值
+  useEffect(() => {
+    autoActiveRef.current = autoActive;
+  }, [autoActive]);
+
+  // 切换项目或章节时停止自动续写（上下文已变，不应继续上一轮循环）
+  useEffect(() => {
+    return () => {
+      clearAutoTimers();
+    };
+  }, [project?.id, activeChapterId]);
 
   // 切换项目时载入该项目的历史会话
   useEffect(() => {
     setError(null);
+    stopAutoContinue();
     if (project?.id == null) {
       setEntries([]);
       return;
@@ -75,6 +118,50 @@ export function ChatPanel({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [entries]);
 
+  /** 清理自动续写的两个定时器 */
+  const clearAutoTimers = () => {
+    if (autoRunTimerRef.current != null) {
+      window.clearTimeout(autoRunTimerRef.current);
+      autoRunTimerRef.current = null;
+    }
+    if (autoCountdownTimerRef.current != null) {
+      window.clearInterval(autoCountdownTimerRef.current);
+      autoCountdownTimerRef.current = null;
+    }
+    setAutoCountdown(null);
+  };
+
+  /** 启动下一轮自动续写的倒计时 */
+  const scheduleAutoContinue = () => {
+    if (!autoActiveRef.current) return;
+    const interval = settings?.autoContinueIntervalMs ?? 5000;
+    const seconds = Math.max(1, Math.round(interval / 1000));
+    setAutoCountdown(seconds);
+    // 每秒递减，便于用户看到下一轮何时触发
+    autoCountdownTimerRef.current = window.setInterval(() => {
+      setAutoCountdown((cur) => {
+        if (cur == null) return null;
+        return cur <= 1 ? 0 : cur - 1;
+      });
+    }, 1000);
+    autoRunTimerRef.current = window.setTimeout(() => {
+      clearAutoTimers();
+      // 用最新的 entries 触发续写（通过函数式 setState 读最新）
+      setEntries((cur) => {
+        // 仅触发副作用，不实际更新 entries
+        void run(CONTINUE_SENTINEL, cur);
+        return cur;
+      });
+    }, interval);
+  };
+
+  /** 停止自动续写（清定时器 + 置 inactive） */
+  const stopAutoContinue = () => {
+    clearAutoTimers();
+    autoActiveRef.current = false;
+    setAutoActive(false);
+  };
+
   const persist = (messages: ChatMessageStored[]) => {
     const projectId = project?.id;
     if (projectId == null) return;
@@ -90,10 +177,30 @@ export function ChatPanel({
     return content.length > limit ? content.slice(-limit) : content;
   };
 
-  /** 会话里存的 userText；续写消息在发请求时按最新正文重建 */
-  const messageContent = (e: ChatMessageStored, recent: string): string =>
+  /** 当前章节之前若干章的尾部摘录，按章节顺序由远及近 */
+  const prevExcerpts = (): PrevChapterExcerpt[] => {
+    const count = settings?.prevChapterCount ?? 0;
+    const limit = settings?.prevChapterChars ?? 1500;
+    if (!count || count <= 0 || activeChapterId == null) return [];
+    const idx = chapters.findIndex((c) => c.id === activeChapterId);
+    if (idx <= 0) return [];
+    return chapters
+      .slice(Math.max(0, idx - count), idx)
+      .map((c) => ({
+        title: c.title,
+        text: c.content.length > limit ? c.content.slice(-limit) : c.content,
+      }))
+      .filter((c) => c.text.trim());
+  };
+
+  /** 会话里存的 userText；续写消息在发请求时按最新正文与前文重建 */
+  const messageContent = (
+    e: ChatMessageStored,
+    recent: string,
+    prev: PrevChapterExcerpt[],
+  ): string =>
     e.userText === CONTINUE_SENTINEL
-      ? buildContinueUserMessage(recent, "")
+      ? buildContinueUserMessage(recent, "", prev)
       : e.content;
 
   const run = async (userText: string, history: ChatMessageStored[]) => {
@@ -123,23 +230,30 @@ export function ChatPanel({
     setStreaming(true);
 
     const recent = recentText();
+    const prev = prevExcerpts();
+    // 前文也参与 lorebook 关键词匹配，前几章提到的设定同样会被激活
+    const contextText = [...prev.map((c) => c.text), recent].join("\n");
     const systemPrompt = buildSystemPrompt(
       project,
       activeCharacters,
-      recent,
+      contextText,
       preset,
     );
+    // 只截断发给 API 的历史；界面与落库仍保留完整会话
+    const sentHistory = trimChatHistory(newHistory, settings?.chatContextTurns ?? 0);
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
-      ...newHistory.map((e) => ({
+      ...sentHistory.map((e) => ({
         role: e.role,
-        content: messageContent(e, recent),
+        content: messageContent(e, recent, prev),
       })),
     ];
 
     const controller = new AbortController();
     abortRef.current = controller;
     let acc = "";
+    // 跟踪本轮是否成功完成（无错误 + 非用户中断）；自动续写据此决定是否触发下一轮
+    let success = false;
     try {
       await generateStream(
         provider,
@@ -161,6 +275,7 @@ export function ChatPanel({
           },
         },
       );
+      success = true;
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
         setError(e instanceof Error ? e.message : String(e));
@@ -171,7 +286,50 @@ export function ChatPanel({
       setStreaming(false);
       setRetryInfo(null);
       abortRef.current = null;
+      // 自动续写只在“成功完成”时触发下一轮；出错或用户中断都停在这里
+      if (autoActiveRef.current && success) {
+        scheduleAutoContinue();
+      } else if (!success) {
+        stopAutoContinue();
+      }
     }
+  };
+
+  /** 构造上下文预览数据（与 run 使用同一组装逻辑，但不发送） */
+  const buildContextSections = () => {
+    if (!project || !provider) return [];
+    const recent = recentText();
+    const prev = prevExcerpts();
+    const contextText = [...prev.map((c) => c.text), recent].join("\n");
+    const systemPrompt = buildSystemPrompt(project, activeCharacters, contextText, preset);
+    const sentHistory = trimChatHistory(entries, settings?.chatContextTurns ?? 0);
+
+    const sections: { title: string; content: string; meta?: string }[] = [];
+    sections.push({
+      title: "系统提示词",
+      content: systemPrompt,
+      meta: `${systemPrompt.length} 字符`,
+    });
+    if (prev.length > 0) {
+      sections.push({
+        title: "前文摘录",
+        content: prev.map((p) => `### ${p.title}\n${p.text}`).join("\n\n"),
+        meta: `${prev.length} 章`,
+      });
+    }
+    sections.push({
+      title: "当前章尾部正文",
+      content: recent || "（空）",
+      meta: `${recent.length} 字符`,
+    });
+    sections.push({
+      title: "对话历史（将发送）",
+      content: sentHistory
+        .map((e) => `[${e.role}]\n${messageContent(e, recent, prev)}`)
+        .join("\n\n"),
+      meta: `${sentHistory.length} 条`,
+    });
+    return sections;
   };
 
   const handleContinue = () => {
@@ -186,6 +344,8 @@ export function ChatPanel({
     const text = input.trim();
     if (!text || streaming) return;
     setInput("");
+    // 用户主动发新指令：打断自动续写循环
+    stopAutoContinue();
     void run(text, entries);
   };
 
@@ -196,6 +356,7 @@ export function ChatPanel({
     const historyBefore = entries.slice(0, idx);
     const lastUser = [...historyBefore].reverse().find((e) => e.role === "user");
     if (!lastUser) return;
+    stopAutoContinue();
     void run(
       lastUser.userText ?? lastUser.content,
       historyBefore.filter((e) => e.id !== lastUser.id),
@@ -204,7 +365,73 @@ export function ChatPanel({
 
   const handleStop = () => {
     abortRef.current?.abort();
+    stopAutoContinue();
   };
+
+  /** 切换自动续写开关：开启后在流结束时自动排下一轮；关闭则清掉所有定时 */
+  const toggleAutoContinue = () => {
+    if (autoActive) {
+      stopAutoContinue();
+      return;
+    }
+    if (!project || !provider) {
+      setError("请先选择项目并配置 AI 服务商");
+      return;
+    }
+    autoActiveRef.current = true;
+    setAutoActive(true);
+    // 如果当前不在 streaming，立即启动第一轮等待
+    if (!streaming) {
+      scheduleAutoContinue();
+    }
+  };
+
+  const handleClear = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setConfirmClear(false);
+    setEntries([]);
+    setError(null);
+    stopAutoContinue();
+    const projectId = project?.id;
+    if (projectId != null) void db.chatSessions.delete(projectId);
+  };
+
+  const handleCopy = (id: string, content: string) => {
+    void navigator.clipboard.writeText(content).then(() => {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1500);
+    });
+  };
+
+  /** 应用快速指令模板：{{selection}} 替换为编辑器选区；无选区且模板依赖选区时只填入输入框 */
+  const applyTemplate = (content: string) => {
+    if (streaming) return;
+    if (!content.includes("{{selection}}")) {
+      void run(content, entries);
+      return;
+    }
+    const selection = getSelection().trim();
+    if (selection) {
+      void run(content.replace(/\{\{selection\}\}/g, selection), entries);
+    } else {
+      setInput(content.replace(/\{\{selection\}\}/g, ""));
+      setError("模板需要选中文本：先在编辑器里选中要处理的段落，或补充输入框内容");
+    }
+  };
+
+  // applyTemplate 依赖闭包里的 streaming/entries/input，用 ref 暴露最新函数避免 handle 过期
+  const applyTemplateRef = useRef(applyTemplate);
+  applyTemplateRef.current = applyTemplate;
+  useImperativeHandle(
+    ref,
+    () => ({
+      applyTemplate: (content: string) => applyTemplateRef.current(content),
+    }),
+    [],
+  );
 
   const lastAssistantId = [...entries]
     .reverse()
@@ -224,6 +451,39 @@ export function ChatPanel({
           ) : (
             <span className="text-[11px] text-red-400">未配置</span>
           )}
+          {entries.length > 0 && !streaming && (
+            <button
+              onClick={handleClear}
+              onBlur={() => setConfirmClear(false)}
+              className={`flex items-center gap-1 rounded p-1 text-[11px] transition-colors ${
+                confirmClear
+                  ? "bg-red-950/60 text-red-300"
+                  : "text-ink-400 hover:bg-ink-700 hover:text-red-400"
+              }`}
+              title="清空本作品的全部对话记录"
+            >
+              <Eraser size={13} /> {confirmClear ? "确认清空？" : ""}
+            </button>
+          )}
+          <button
+            onClick={toggleAutoContinue}
+            className={`flex items-center gap-1 rounded p-1 text-[11px] transition-colors ${
+              autoActive
+                ? "bg-amber-950/50 text-amber-300 hover:bg-amber-900/50"
+                : "text-ink-400 hover:bg-ink-700 hover:text-ink-100"
+            }`}
+            title={autoActive ? "自动续写已开启，点击关闭" : "自动续写：完成后每隔 N 秒自动再续写一次"}
+          >
+            <Repeat size={14} className={autoActive ? "animate-pulse" : ""} />
+            {autoActive && autoCountdown != null ? `${autoCountdown}s` : ""}
+          </button>
+          <button
+            onClick={() => setShowContext(true)}
+            className="rounded p-1 text-ink-400 hover:bg-ink-700 hover:text-ink-100"
+            title="查看本次请求注入 AI 的完整上下文"
+          >
+            <Eye size={14} />
+          </button>
           <button
             onClick={openSettings}
             className="rounded p-1 text-ink-400 hover:bg-ink-700 hover:text-ink-100"
@@ -273,6 +533,18 @@ export function ChatPanel({
                   </button>
                 )}
                 <button
+                  onClick={() => handleCopy(e.id, e.content)}
+                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[11px] ${
+                    copiedId === e.id
+                      ? "text-emerald-400"
+                      : "text-ink-400 hover:bg-ink-800 hover:text-accent-400"
+                  }`}
+                  title="复制回复内容"
+                >
+                  {copiedId === e.id ? <Check size={12} /> : <Copy size={12} />}
+                  {copiedId === e.id ? "已复制" : "复制"}
+                </button>
+                <button
                   onClick={() => insertAtEnd(e.content)}
                   className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-ink-400 hover:bg-ink-800 hover:text-accent-400"
                   title="追加到当前章节末尾"
@@ -321,6 +593,21 @@ export function ChatPanel({
             </button>
           )}
         </div>
+        {(settings?.instructionTemplates?.length ?? 0) > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {settings!.instructionTemplates.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => applyTemplate(t.content)}
+                disabled={streaming}
+                title={t.content}
+                className="rounded-full border border-ink-600 px-2.5 py-0.5 text-[11px] text-ink-300 transition-colors hover:border-accent-500 hover:text-accent-400 disabled:opacity-40"
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             value={input}
@@ -344,6 +631,13 @@ export function ChatPanel({
           </button>
         </div>
       </div>
+
+      {showContext && (
+        <ContextPreviewModal
+          sections={buildContextSections()}
+          onClose={() => setShowContext(false)}
+        />
+      )}
     </div>
   );
-}
+});

@@ -30,6 +30,8 @@ export interface Chapter {
   content: string;
   sortOrder: number;
   updatedAt: number;
+  /** 章节标签（如"伏笔"、"高潮"、"待修"），用于筛选与鸟瞰 */
+  tags: string[];
 }
 
 export type CardSpec = "v1" | "v2" | "v3";
@@ -91,6 +93,38 @@ export interface Preset {
   createdAt: number;
 }
 
+/**
+ * 快速指令模板：聊天面板输入框上方的一键指令。
+ * content 支持 {{selection}} 宏——发送时替换为编辑器当前选中文本；
+ * 无选区时模板若含该宏则不自动发送，仅填入输入框由用户补充内容。
+ */
+export interface InstructionTemplate {
+  id: string;
+  name: string;
+  content: string;
+}
+
+export const defaultInstructionTemplates: InstructionTemplate[] = [
+  {
+    id: "builtin-polish",
+    name: "润色",
+    content:
+      "请润色以下段落：保持原意、人称与叙事节奏不变，优化遣词造句，让文字更凝练有画面感，直接输出润色后的正文，不要附加解释：\n\n{{selection}}",
+  },
+  {
+    id: "builtin-expand",
+    name: "扩写",
+    content:
+      "请扩写以下片段：补充环境氛围、人物动作与心理细节，保持原有风格与情节走向不变，篇幅扩至原来的两到三倍，直接输出扩写后的正文：\n\n{{selection}}",
+  },
+  {
+    id: "builtin-summarize",
+    name: "总结",
+    content:
+      "请概括以下内容的剧情要点（人物、事件、关键转折），输出简明大纲，便于后续章节保持连贯：\n\n{{selection}}",
+  },
+];
+
 export type ProviderType = "openai" | "anthropic";
 
 export interface AIProvider {
@@ -109,19 +143,40 @@ export interface AppSettings {
   activeProviderId: string | null;
   /** 续写时最多携带多少字的正文作为上下文 */
   contextChars: number;
+  /** 续写时携带当前章节之前的章节数（0 = 不携带前文） */
+  prevChapterCount: number;
+  /** 每个前文章节最多携带的尾部字数 */
+  prevChapterChars: number;
+  /** 组装 API 请求时最多携带的对话轮数（0 = 全部携带） */
+  chatContextTurns: number;
   temperature: number;
   maxTokens: number;
   presets: Preset[];
   /** 当前激活的写作预设；null 表示使用内置默认提示词 */
   activePresetId: string | null;
+  /** 聊天面板快速指令模板 */
+  instructionTemplates: InstructionTemplate[];
+  /** 自动续写：每轮完成后等待多少毫秒再触发下一轮续写 */
+  autoContinueIntervalMs: number;
+  /** 主密码 hash（null = 未设锁，apiKey 明文存储） */
+  masterHash: string | null;
+  /** 主密码派生用的 salt（与 masterHash 同步设置） */
+  masterSalt: string | null;
 }
 
 export const defaultSettings: AppSettings = {
   providers: [],
   activeProviderId: null,
   contextChars: 3000,
+  prevChapterCount: 1,
+  prevChapterChars: 1500,
+  chatContextTurns: 10,
   temperature: 0.85,
   maxTokens: 1000,
   presets: [],
   activePresetId: null,
+  instructionTemplates: defaultInstructionTemplates,
+  autoContinueIntervalMs: 5000,
+  masterHash: null,
+  masterSalt: null,
 };

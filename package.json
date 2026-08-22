@@ -7,12 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "proxy": "node scripts/proxy.mjs"
+    "proxy": "node scripts/proxy.mjs",
+    "test": "node scripts/test-card-import.mjs && node scripts/test-iteration.mjs && node scripts/test-preset-import.mjs && node scripts/test-ai-retry.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-crypto.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.2",
     "@codemirror/language": "^6.11.0",
+    "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",
     "@lenml/char-card-reader": "^1.1.1",
@@ -24,6 +27,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "^4.1.4",
     "@types/react": "^18.3.20",
     "@types/react-dom": "^18.3.6",

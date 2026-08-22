@@ -46,6 +46,23 @@ export class NovelDB extends Dexie {
       settings: "id",
       chatSessions: "projectId",
     });
+    // v4：章节标签（旧章节补齐空数组）
+    this.version(4)
+      .stores({
+        projects: "++id, updatedAt",
+        chapters: "++id, projectId, sortOrder, updatedAt",
+        characters: "++id, projectId, name",
+        settings: "id",
+        chatSessions: "projectId",
+      })
+      .upgrade((tx) =>
+        tx
+          .table<Chapter, number>("chapters")
+          .toCollection()
+          .modify((c) => {
+            if (c.tags == null) c.tags = [];
+          }),
+      );
   }
 }
 
