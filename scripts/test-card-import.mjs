@@ -12,7 +12,7 @@ const outFile = join(mkdtempSync(join(tmpdir(), "nn-card-")), "bundle.mjs");
 await esbuild.build({
   stdin: {
     contents:
-      'export { extractLorebookEntries, parseCharacterFile } from "./src/lib/cardImport";',
+      'export { extractLorebookEntries, parseCharacterBytes } from "./src/domain/cardImport";',
     resolveDir: process.cwd(),
     loader: "ts",
   },
@@ -21,7 +21,7 @@ await esbuild.build({
   platform: "node",
   outfile: outFile,
 });
-const { extractLorebookEntries, parseCharacterFile } = await import(
+const { extractLorebookEntries, parseCharacterBytes } = await import(
   pathToFileURL(outFile).href
 );
 
@@ -185,12 +185,13 @@ check(
   "测试角色与主角在雨夜相遇。",
 );
 
-// 6. parseCharacterFile 完整链路：JSON 文件 → { character, loreEntries }
-console.log("--- parseCharacterFile ---");
-const jsonFile = new File([JSON.stringify(v2Card)], "linwan.json", {
-  type: "application/json",
-});
-const parsed = await parseCharacterFile(jsonFile);
+// 6. parseCharacterBytes 完整链路：JSON 字节 → { character, loreEntries }
+console.log("--- parseCharacterBytes ---");
+const parsed = await parseCharacterBytes(
+  new TextEncoder().encode(JSON.stringify(v2Card)),
+  "linwan.json",
+  "application/json",
+);
 check("返回 character 主体", parsed.character.name, "林晚");
 check("返回 loreEntries", parsed.character !== undefined && parsed.loreEntries.length, 1);
 check("词条不含 id（由 store 生成）", "id" in (parsed.loreEntries[0] ?? { id: 0 }), false);

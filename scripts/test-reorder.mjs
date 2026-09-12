@@ -10,7 +10,7 @@ const dir = mkdtempSync(join(tmpdir(), "nn-reorder-"));
 const outFile = join(dir, "bundle.mjs");
 await esbuild.build({
   stdin: {
-    contents: 'export { computeReorder } from "./src/lib/reorder";',
+    contents: 'export { computeReorder } from "./src/domain/reorder";',
     resolveDir: process.cwd(),
     loader: "ts",
   },

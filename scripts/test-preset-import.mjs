@@ -10,8 +10,8 @@ const outFile = join(mkdtempSync(join(tmpdir(), "nn-preset-")), "bundle.mjs");
 await esbuild.build({
   stdin: {
     contents: [
-      'export { parsePresetFile } from "./src/lib/presetImport";',
-      'export { buildSystemPrompt, renderStoryString, buildContinueUserMessage, trimChatHistory } from "./src/lib/prompt";',
+      'export { parsePresetFile } from "./src/domain/presetImport";',
+      'export { buildSystemPrompt, renderStoryString, buildContinueUserMessage, trimChatHistory } from "./src/domain/prompt";',
     ].join("\n"),
     resolveDir: process.cwd(),
     loader: "ts",

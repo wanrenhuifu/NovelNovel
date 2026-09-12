@@ -9,7 +9,7 @@ import esbuild from "esbuild";
 const outFile = join(mkdtempSync(join(tmpdir(), "nn-search-")), "bundle.mjs");
 await esbuild.build({
   stdin: {
-    contents: 'export { searchChapters } from "./src/lib/search";',
+    contents: 'export { searchChapters } from "./src/domain/search";',
     resolveDir: process.cwd(),
     loader: "ts",
   },

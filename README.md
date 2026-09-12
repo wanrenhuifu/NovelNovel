@@ -1,99 +1,139 @@
-# NovelNovel · AI 小说写作 IDE + DeepSeek Harness 插件
+# dsh-novelnovel · DeepSeek Harness 插件
 
-一个 AI 小说写作工作台，两种用法，共用 `src/lib` 的同一份领域逻辑（角色卡解析 / 预设解析 / 提示词组装 / 词条匹配 / 章节排序 / 全文搜索 / PNG 卡读写）：
+用工作区里的**普通文件**写小说：agent 直接用 `novel_*` 工具建作品、写正文、导角色卡、维护世界观词条、
+检索与导出；**续写由 harness 的模型承担**，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 /
+写作预设 / 前文摘录）组装成写作简报交给它。
 
-- **浏览器端 IDE**：章节编辑、SillyTavern 角色卡导入、世界观 Lorebook、AI 续写；数据存本地 IndexedDB，无需后端服务器。
-- **DeepSeek Harness 插件**（`dsh-plugin/`）：harness 的 agent 直接用 `novel_*` 工具写作、查卡、维护设定，数据落工作区文件；原本由应用自己调 LLM 的续写改由 harness 承担。安装与用法见 [dsh-plugin/README.md](dsh-plugin/README.md)。
+本仓库就是插件包（`dsh.bundle.patch` → `cordis.patch.yml`，向 profile 插入一行 `id: novelnovel`）。
+领域逻辑（角色卡解析、预设解析、提示词组装、词条关键词匹配、章节排序、全文搜索、PNG 卡读写、
+字数统计）集中在 `src/domain/`，与 harness 侧的存储/注册代码分离。
 
-## 启动
+## 安装
 
 ```bash
 npm install
-npm run dev        # 开发：http://localhost:5173
-npm run build      # 生产构建
-npm run preview    # 预览构建产物
-npm run proxy      # 可选：本地 CORS 代理（127.0.0.1:8788），仅当中转站限制跨域时需要
+npm run build                    # 构建插件产物 lib/（不入库，改了 src/ 必须重建）
+
+# 装进一个 dsh profile（不存在会自动初始化）
+dsh plugin --profile novelnovel add .
+
+# 验证：在真实 harness 服务上跑通全部工具（不调用模型）
+npm run test:dsh                 # 默认 profile: novelnovel
+DSH_PROFILE=web npm run test:dsh # 指定其它 profile
 ```
 
-## 作为 DeepSeek Harness 插件使用
+想装到已有的 `web` profile，把 profile 名换成 `web` 即可。
+分发时用 `npm pack` 产出的 tarball 安装：插件会被复制进 profile 的 `node_modules`，不依赖本仓库工作树。
 
-仓库里还带一个 dsh 插件（`dsh-plugin/`）：小说以**工作区里的普通文件**存放，agent 直接用
-`novel_*` 工具建作品、写正文、导卡、维护词条、检索、导出；原本由应用自己调 LLM 的「续写」
-改由 harness 承担，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 / 写作预设 / 前文摘录）
-组装成写作简报交给 agent。浏览器应用照旧可用，两者共用 `src/lib` 的同一份纯逻辑
-（角色卡解析、预设解析、提示词组装、词条关键词匹配、章节排序、全文搜索、PNG 卡读写、字数统计）。
+## 用法
+
+在装了插件的 profile 里开一个会话，直接用自然语言提写作需求即可；系统提示词会引导 agent 使用这些工具：
+
+| 工具 | 作用 |
+|---|---|
+| `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求）/ 切换当前作品 / 删除 |
+| `novel_chapter` | 章节列表、读取、新建、**追加（写正文的入口）**、覆写、改名、打标签、排序、检索、删除 |
+| `novel_character` | SillyTavern 角色卡（PNG/JSON，V1/V2/V3）导入、查看、参与开关、再导出 PNG、移除 |
+| `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词=常驻注入） |
+| `novel_preset` | 写作预设导入（SillyTavern JSON）/ 手写 / 编辑 / 激活 / 停用 |
+| `novel_context` | **写作前必调**：组装本次的写作简报（系统提示词 + 指令块 + 注入清单 + 参与角色） |
+| `novel_export` | 整书导出 Markdown / TXT，或全量备份 JSON |
+
+另外自带：
+
+- 技能 `novel-writing`（写作流程与连续性检查）、`novel-cards`（角色卡 / 预设的导入语义与宏规则），
+  agent 按需加载，`/novel-writing` 之类的手势也能直接触发。
+- 斜杠命令 `/novel`：直接打印当前作品状态（`/novel list` 列出全部，`/novel <作品>` 切换当前作品），
+  不经过模型。
+- 一小段系统提示词（order 4500），说明这个工作区里的小说该怎么写。
+
+典型流程（agent 视角）：
+
+```text
+novel_context chapter=3 instruction="写林晚在城墙下遇到祭司"   → 拿到简报
+（按简报写正文）
+novel_chapter action=append chapter=3 text="…"                → 落到章节
+novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录新设定
+```
+
+`novel_context` 返回的系统提示词区块是设定与文风的权威来源：它就是给模型的 system prompt，
+由 harness 自己的模型来遵守。
+
+## 配置
+
+在 profile 的 `cordis.patch.yml` 里按行 id 覆盖，无需改插件包：
+
+```yaml
+- id: novelnovel
+  name: dsh-novelnovel
+  config:
+    dataDir: .novelnovel          # 数据根目录（相对工作目录，默认 .novelnovel）
+    defaultPrevChapterCount: 2    # 简报默认携带的前文章节数（默认 1）
+    defaultPrevChapterChars: 2000 # 每个前文章节摘取的尾部字数（默认 1500）
+    defaultRecentChars: 4000      # 当前章摘取的尾部字数（默认 3000）
+```
+
+非法配置（绝对路径、`..`、负数）在加载期直接抛错，不静默取默认值。
+
+## 数据布局
+
+```text
+<工作目录>/.novelnovel/
+  workspace.json                        当前作品
+  projects/<projectId>/
+    project.json                        标题 / 简介 / 世界观 / 写作要求
+    lorebook.json                       世界观词条
+    presets.json                        写作预设与激活项
+    chapters/index.json                 章节元数据（标题、标签、顺序）
+    chapters/<chapterId>.md             章节正文（Markdown，可直接用 read/write 工具编辑）
+    characters/<id>.json               角色卡（rawData 无损保留）
+    characters/<id>.<ext>              原始头像（扩展名与真实媒体类型一致）
+    exports/                            导出结果
+```
+
+正文独立成文件是有意的：长篇小说用 `read`/`write` 工具直接改正文比走工具更顺手，
+而 `novel_chapter action=list` 会重新读文件统计字数，所以绕过插件直接改文件也不会失同步。
+
+## 设计说明
+
+- **写入路径**：文本读写一律走 `ctx.fs`（受 harness 沙箱与权限策略约束、与 `write`/`edit`
+  共用版本语义，并 `emit('fs/observed')` 让变更流与「先读后写」策略保持一致）。
+  `ctx.fs` 没有删除与二进制写入能力，删文件与写 PNG 头像用 `node:fs` —— 这条路径**不受沙箱约束**，
+  所以插件自己兜住：目标必须落在会话工作目录内，否则直接拒绝（`novel_character action=export
+  out_path=<工作区外>` 会报错而不是写出去）。
+- **损坏的数据文件**：`project.json` 读不出来的作品目录会被跳过并在 `novel_project action=list`
+  里点名（不让一个坏目录把整个插件堵死）；`workspace.json` 损坏时同样不致命，但此时若有多部作品，
+  解析「当前作品」会要求显式传 `project=` ——**宁可报错也不猜**，避免把正文写进错误的作品。
+  例外是 `chapters/index.json`：它损坏时直接报错，因为静默当成空索引会让下一次建章覆盖掉整份目录。
+  数据文件都是给人手改的，读 JSON 时容忍 BOM 与 CRLF。
+- **harness 依赖不内联**：`@deepseek-ai/*` 是 peer，运行时由 harness 自己提供——服务按模块实例注册，
+  内联第二份会重复注册。以 `link:` 方式安装时包位于工作区之外，Node 从包 realpath 找不到 harness
+  的依赖闭包，所以 `src/harness.ts` 会依次尝试：普通 import → 从 harness 进程入口解析 →
+  从 `$DSH_HOME/profiles` 与工作目录解析，并保证与运行中的 harness 是同一个模块实例。
+- **API 契约副本**：`src/contract.ts` 是手写的最小类型契约（只含本插件用到的成员），
+  依据 `@deepseek-ai/dsh@0.1.2-rc.1 / 0.1.3-alpha.2` 的真实签名整理。这样插件源码不依赖 harness
+  的包解析路径就能通过 `tsc`；运行时行为由真实 harness 与端到端验证保证。
+- **技能注册**：用 `ctx.skills.register` 运行时注册（rank 250），而不是去改 `skill-filesystem`
+  的 `customSkillDirs`——后者是别的插件行的 config，覆盖它要重述 dsh-base 的整份配置（patch 是整行替换），
+  极易随上游变化失效。副作用是项目级技能（rank 100/200）仍可覆盖同名插件技能。
+- **破坏性操作**：删除作品 / 章节 / 角色卡都需要 `confirm=true`，插件会拒绝未确认的调用，
+  提示先与用户确认。
+
+## 开发
 
 ```bash
-npm run build:plugin                              # 构建插件（lib/ 不入库，必须构建；改 src/ 后要重建）
-dsh plugin --profile novelnovel add ./dsh-plugin  # 装进一个 profile（不存在会自动初始化）
-npm run test:dsh                                 # 在真实 harness 服务上跑通全部工具（34 项检查）
+npm run build       # esbuild 打包到 lib/
+npm run typecheck   # tsc -p .（严格模式，零错误）
+npm test            # 4 个纯逻辑单测（卡解析 / 预设+提示词 / 检索 / 排序）
+npm run test:dsh    # 端到端验证（需要已安装的 profile）
 ```
 
-装好后在会话里直接提写作需求即可，系统提示词会引导 agent 用工具；斜杠命令 `/novel`
-直接打印当前作品状态（`/novel list` 列出全部，`/novel <作品>` 切换），技能 `novel-writing` /
-`novel-cards` 保存写作流程与「卡/预设导入」的领域规则。数据布局、配置项与设计说明见
-[dsh-plugin/README.md](dsh-plugin/README.md)。
+`npm run test:dsh` 会拉起真实 harness 服务（SystemPrompt + ToolRuntime + LocalFileSystem +
+SkillRegistry + observation policy）并驱动全部工具：作品/章节/词条/角色卡（含 PNG 双写回读）/预设/
+简报组装/关键词注入命中与未命中/检索/导出/技能注册/命令处理器/配置校验/工作区边界与损坏文件容错/
+观察记录归属/卸载清理，共 34 项检查，不调用模型。`npm test` 是它的快速补充：4 个纯逻辑单测直接
+测 `src/domain/` 里的解析与组装函数。
 
-## 功能
-
-- **多项目管理**：每部作品独立管理章节、角色卡、世界观设定与写作要求
-- **章节编辑器**：CodeMirror 6 驱动的 Markdown 编辑器，字数统计、防抖自动保存（IndexedDB）；章节**支持拖拽排序**（悬停显示拖拽手柄，拖动到目标位置的上方或下方释放即可；键盘 ↑/↓ 按钮同时保留），删除需两步确认；章节列表底部实时显示全书总字数
-- **大纲模式**：左栏"大纲"页以鸟瞰视图列出全部章节（标题 + 首段预览 + 字数），点击跳转编辑，适合长篇小说整体把控节奏
-- **章节标签**：章节可打标签（如"伏笔"、"高潮"、"待修"），悬停标签可移除；标签栏点击筛选，多章节批量归类
-- **编辑器增强**：选中文本右键弹出 AI 菜单（润色 / 扩写 / 总结 / 复制选区）；工具栏"本章内搜索"按钮打开 CodeMirror 搜索面板（支持正则、替换），选中内容自动高亮全部匹配
-- **角色卡库**：导入 SillyTavern 角色卡（PNG / JSON，兼容 V1 / V2 / V3 规范），PNG 内嵌数据自动提取（ccv3 优先于 chara），原始卡片数据无损保留；卡内**世界书（character_book）自动并入项目 Lorebook**（`{{char}}`/`{{user}}` 宏导入时按来源卡解析）；勾选"参与"的角色设定会注入 AI 提示词；支持把角色**再导出为 PNG**（chara + ccv3 双写，可被 SillyTavern 直接读回）
-- **世界观 Lorebook**：按词条维护设定（名称 / 触发关键词 / 内容 / 启用开关）。带关键词的词条仅在关键词出现在续写上下文中时注入提示词；不带关键词的词条为常驻设定，始终注入
-- **全文搜索**：顶栏"搜索"在全书章节标题与正文中检索（大小写不敏感），结果带关键词高亮与上下文摘要，↑↓ 选择、Enter 跳转到命中章节并把光标定位到命中处
-- **导出**：全书导出为 Markdown 或 TXT（按章节分节）
-- **AI 写作助手**：
-  - 续写本章：自动拼装系统提示词（世界观 + Lorebook 相关词条 + 参与角色设定 + 写作要求）+ 最近正文上下文；可携带当前章节之前 N 章的尾部摘录作为连贯性参考（章节数与每章字数可在设置中调），前文同样参与 Lorebook 关键词匹配
-  - 写作预设：导入 SillyTavern 预设 JSON（system 提示词 / context 模板 / 合订信封），自定义系统提示词与设定区块组装方式，也可手动新建编辑；仓库自带示例 `samples/preset-example.json`
-  - 自由指令对话，流式输出，结果可"插入末尾 / 替换选区 / 一键复制"；最后一条回复支持"重新生成"
-  - 快速指令模板：内置润色 / 扩写 / 总结，点击即按模板发起对话；模板中的 `{{selection}}` 自动替换为编辑器选中文本（无选区时填入输入框等你补充）；模板可在设置中新建 / 编辑 / 删除 / 恢复默认
-  - 会话按项目持久化，刷新页面不丢失；可随时"清空会话"（两步确认）
-  - 可限制发送给 AI 的对话轮数（设置"对话携带轮数"，0 = 全部），只影响请求、不影响本地完整记录
-  - 支持 OpenAI 兼容接口（OpenAI / DeepSeek / 中转站 / Ollama 等）与 Anthropic Claude 原生接口，可拉取模型列表，可调温度 / maxTokens / 上下文字数
-  - 浏览器直连失败（疑似 CORS 限制）时自动回退本地代理，无需改配置
-  - 请求失败自动重试：限流 / 服务过载（429 / 5xx / Anthropic overloaded）等临时错误指数退避重试最多 2 次（遵循 Retry-After），聊天面板显示重试进度，可随时停止；已开始输出后不会重试（避免内容重复）
-  - 自动续写：聊天面板顶部循环按钮开启后，每轮续写完成自动间隔若干秒触发下一轮（间隔可在设置中调，默认 5 秒），顶部显示倒计时；出错、手动发送指令、切换章节或停止都会打断循环
-  - 上下文可视化：眼睛按钮展示本次请求实际注入 AI 的全部内容（系统提示词 / 前文摘录 / 当前章尾部 / 对话历史），每段可单独复制，用于调试提示词与排查注入问题
-- **API Key 加密**：设置中可开启"加密锁"（主密码）。开启后所有 API Key 以 AES-GCM 密文保存在 IndexedDB，主密码不落盘、每次刷新页面需重新输入解锁；忘记主密码无法找回，解除加密锁需要当前密码
-- **备份与恢复**：顶栏"备份"一键导出全部数据（作品、章节、角色卡、设置）为 JSON，可随时导入恢复（整体覆盖，含两步确认）
-
-## CORS 代理（可选）
-
-部分 OpenAI 兼容中转站不返回 CORS 头，浏览器无法直连。此时应用会自动尝试本地代理：
-
-```bash
-npm run proxy   # 监听 127.0.0.1:8788
-```
-
-代理只做透明转发（POST /proxy，流式回传），不存储任何内容；仅生成请求走代理，拉取模型列表仍直连。
-
-## 技术栈
-
-Vite + React 18 + TypeScript · Zustand · Dexie (IndexedDB) · CodeMirror 6 · Tailwind CSS v4 · @lenml/char-card-reader
-
-## 测试
-
-```bash
-npm run test        # 全部纯逻辑单测（下面 7 个脚本）
-node scripts/test-card-import.mjs   # 角色卡解析链路：PNG V2 / 双写 ccv3 / JSON / V1
-node scripts/test-iteration.mjs     # 代理转发/安全校验 + PNG 导出回读（char-card-reader 验证）
-node scripts/test-preset-import.mjs # 预设导入：四类 SillyTavern 预设 JSON + story_string 渲染 + 提示词组装
-node scripts/test-ai-retry.mjs      # AI 请求重试：退避/Retry-After/状态码判定 + 真实 HTTP 集成（含出字后不重试）
-node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/上限/顺序
-node scripts/test-reorder.mjs       # 章节拖拽排序：边界/位移/规范化/不可变性
-node scripts/test-crypto.mjs        # API Key 加密：enc/dec 往返 / 错密码 / IV 随机 / hash 一致性
-npm run test:e2e    # Playwright 端到端（先 npm run build；自动拉起 preview + mock AI 上游）
-```
-
-E2E 覆盖：建作品/章节/正文持久化、章节重命名删除、全文搜索跳转、拖拽排序（刷新后保持）、续写链路（哨兵重建为最新正文 + mock 流式回复）、上下文预览、API Key 加密开锁解锁全流程（9 条用例，Chromium）。
-
-插件相关：
-
-```bash
-npm run build:plugin      # 构建 dsh 插件产物（dsh-plugin/lib/，不入库）
-npm run typecheck:plugin  # 插件类型检查（tsc -p dsh-plugin，严格模式）
-npm run test:dsh          # 插件端到端验证：真实 harness 服务上驱动全部工具（34 项检查，不调用模型）
-```
+`tests/perf-probe.mjs` 是性能探针（在 profile 目录里跑）：铺 3 部 × 200 章，
+打印每个工具调用的耗时与 `ctx.fs` 调用次数。解析作品引用只读元数据、统计字数才读正文，
+这条边界靠它守住——把正文读回解析路径会让一次 `action=append` 的调用数从 39 涨到 1839。

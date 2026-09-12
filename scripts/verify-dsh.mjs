@@ -1,4 +1,4 @@
-// 在某个 dsh profile 里跑 dsh-plugin/tests/verify.mjs。
+// 在某个 dsh profile 里跑 tests/verify.mjs。
 //
 // 为什么不能在仓库根直接跑：插件的 @deepseek-ai/* 依赖由 profile 的 node_modules
 // 提供（见 dsh-plugin/README.md 的安装说明），而 Node 的 ESM 解析基于文件位置。
@@ -17,7 +17,7 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
 const profileName = process.env.DSH_PROFILE ?? "novelnovel";
 const profileDir = join(dshHome, "profiles", profileName);
-const verifyScript = join(repoRoot, "dsh-plugin", "tests", "verify.mjs");
+const verifyScript = join(repoRoot, "tests", "verify.mjs");
 
 if (!existsSync(verifyScript)) {
   console.error(`找不到验证脚本：${verifyScript}`);
@@ -28,8 +28,8 @@ if (!existsSync(profileDir)) {
     [
       `dsh profile "${profileName}" 不存在：${profileDir}`,
       "先构建并安装插件，然后重跑：",
-      "  npm run build:plugin",
-      `  dsh plugin --profile ${profileName} add ./dsh-plugin`,
+      "  npm run build",
+      `  dsh plugin --profile ${profileName} add ${repoRoot}`,
     ].join("\n"),
   );
   process.exit(1);

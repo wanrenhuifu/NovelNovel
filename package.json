@@ -1,43 +1,46 @@
 {
-  "name": "novelnovel",
+  "name": "dsh-novelnovel",
   "private": true,
   "version": "0.1.0",
-  "description": "NovelNovel — AI 小说写作工作台：浏览器端 IDE（章节编辑 / 角色卡 / Lorebook / AI 续写）+ DeepSeek Harness 插件（dsh-plugin/）",
+  "description": "NovelNovel — DeepSeek Harness 插件：novel_* 工具、写作技能与 /novel 命令，用工作区文件写小说（章节/角色卡/世界观词条/写作预设/上下文组装/导出）",
   "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "proxy": "node scripts/proxy.mjs",
-    "build:plugin": "node dsh-plugin/build.mjs",
-    "typecheck:plugin": "tsc -p dsh-plugin",
-    "test": "node scripts/test-card-import.mjs && node scripts/test-iteration.mjs && node scripts/test-preset-import.mjs && node scripts/test-ai-retry.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-crypto.mjs",
-    "test:e2e": "playwright test",
+    "build": "node build.mjs",
+    "typecheck": "tsc -p .",
+    "test": "node scripts/test-card-import.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs",
     "test:dsh": "node scripts/verify-dsh.mjs"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "dependencies": {
-    "@codemirror/commands": "^6.8.1",
-    "@codemirror/lang-markdown": "^6.3.2",
-    "@codemirror/language": "^6.11.0",
-    "@codemirror/search": "^6.7.1",
-    "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.36.5",
-    "@lenml/char-card-reader": "^1.1.1",
-    "dexie": "^4.0.11",
-    "dexie-react-hooks": "^1.1.7",
-    "lucide-react": "^0.474.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "zustand": "^5.0.3"
+    "@lenml/char-card-reader": "^1.1.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
-    "@tailwindcss/vite": "^4.1.4",
-    "@types/react": "^18.3.20",
-    "@types/react-dom": "^18.3.6",
-    "@vitejs/plugin-react": "^4.4.1",
-    "tailwindcss": "^4.1.4",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.2"
+    "esbuild": "^0.25.12",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-fs": "*",
+    "@deepseek-ai/dsh-skill": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-tools": "*"
   }
 }
