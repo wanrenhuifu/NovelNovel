@@ -1,0 +1,6 @@
+# dsh-novelnovel 贡献的配置层：向 profile 的空根插入本插件的一行。
+# 行内 config 见 src/index.ts 的 Config 声明；用户可在自己 profile 的
+# cordis.patch.yml 里按 id 覆盖，无需改动本包。
+- insert:
+    - id: novelnovel
+      name: dsh-novelnovel

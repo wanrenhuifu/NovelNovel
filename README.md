@@ -12,6 +12,25 @@ npm run preview    # 预览构建产物
 npm run proxy      # 可选：本地 CORS 代理（127.0.0.1:8788），仅当中转站限制跨域时需要
 ```
 
+## 作为 DeepSeek Harness 插件使用
+
+仓库里还带一个 dsh 插件（`dsh-plugin/`）：小说以**工作区里的普通文件**存放，agent 直接用
+`novel_*` 工具建作品、写正文、导卡、维护词条、检索、导出；原本由应用自己调 LLM 的「续写」
+改由 harness 承担，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 / 写作预设 / 前文摘录）
+组装成写作简报交给 agent。浏览器应用照旧可用，两者共用 `src/lib` 的同一份纯逻辑
+（角色卡解析、预设解析、提示词组装、词条关键词匹配、章节排序、全文搜索、PNG 卡读写、字数统计）。
+
+```bash
+npm run build:plugin                              # 构建插件（lib/ 不入库，必须构建；改 src/ 后要重建）
+dsh plugin --profile novelnovel add ./dsh-plugin  # 装进一个 profile（不存在会自动初始化）
+npm run test:dsh                                 # 在真实 harness 服务上跑通全部工具（34 项检查）
+```
+
+装好后在会话里直接提写作需求即可，系统提示词会引导 agent 用工具；斜杠命令 `/novel`
+直接打印当前作品状态（`/novel list` 列出全部，`/novel <作品>` 切换），技能 `novel-writing` /
+`novel-cards` 保存写作流程与「卡/预设导入」的领域规则。数据布局、配置项与设计说明见
+[dsh-plugin/README.md](dsh-plugin/README.md)。
+
 ## 功能
 
 - **多项目管理**：每部作品独立管理章节、角色卡、世界观设定与写作要求
@@ -67,3 +86,11 @@ npm run test:e2e    # Playwright 端到端（先 npm run build；自动拉起 pr
 ```
 
 E2E 覆盖：建作品/章节/正文持久化、章节重命名删除、全文搜索跳转、拖拽排序（刷新后保持）、续写链路（哨兵重建为最新正文 + mock 流式回复）、上下文预览、API Key 加密开锁解锁全流程（9 条用例，Chromium）。
+
+插件相关：
+
+```bash
+npm run build:plugin      # 构建 dsh 插件产物（dsh-plugin/lib/，不入库）
+npm run typecheck:plugin  # 插件类型检查（tsc -p dsh-plugin，严格模式）
+npm run test:dsh          # 插件端到端验证：真实 harness 服务上驱动全部工具（34 项检查，不调用模型）
+```

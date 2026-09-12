@@ -1,17 +1,22 @@
-import type { Chapter } from "../types";
-
 /** 搜索结果片段：hit 为 true 的段是命中关键词，渲染时高亮 */
 export interface SearchSegment {
   text: string;
   hit: boolean;
 }
 
-export interface SearchMatch {
-  chapterId: number;
+export interface SearchMatch<Id extends string | number = number> {
+  chapterId: Id;
   chapterTitle: string;
   /** 命中在章节正文中的字符位置（标题命中为 null） */
   pos: number | null;
   segments: SearchSegment[];
+}
+
+/** 参与搜索的章节最小形状（浏览器端 Chapter 与 dsh 插件端的章节元数据都满足） */
+export interface SearchableChapter<Id extends string | number> {
+  id?: Id;
+  title: string;
+  content: string;
 }
 
 /**
@@ -19,21 +24,23 @@ export interface SearchMatch {
  * 每章正文最多取前 maxPerChapter 处命中，总结果上限 maxTotal；
  * 章节按传入顺序（调用方保证已按 sortOrder 排序），命中按出现先后。
  */
-export function searchChapters(
-  chapters: Chapter[],
+export function searchChapters<
+  C extends { id?: string | number; title: string; content: string },
+>(
+  chapters: C[],
   query: string,
   { maxPerChapter = 20, maxTotal = 200 } = {},
-): SearchMatch[] {
+): SearchMatch<NonNullable<C["id"]>>[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const results: SearchMatch[] = [];
+  const results: SearchMatch<NonNullable<C["id"]>>[] = [];
   for (const ch of chapters) {
     if (results.length >= maxTotal) break;
     // 标题命中：摘要取正文开头
     if (ch.title.toLowerCase().includes(q) && results.length < maxTotal) {
       const bodyStart = ch.content.slice(0, 40).replace(/\s+/g, " ").trim();
       results.push({
-        chapterId: ch.id!,
+        chapterId: ch.id as NonNullable<C["id"]>,
         chapterTitle: ch.title,
         pos: null,
         segments: [
@@ -50,7 +57,7 @@ export function searchChapters(
       const idx = lower.indexOf(q, from);
       if (idx < 0) break;
       results.push({
-        chapterId: ch.id!,
+        chapterId: ch.id as NonNullable<C["id"]>,
         chapterTitle: ch.title,
         pos: idx,
         segments: buildSegments(text, idx, q.length),

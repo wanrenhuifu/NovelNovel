@@ -113,7 +113,7 @@ export async function makeSolidPng(
   width: number,
   height: number,
   rgba: [number, number, number, number],
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   const ihdr = new Uint8Array(13);
   const ihdrView = new DataView(ihdr.buffer);
   ihdrView.setUint32(0, width);

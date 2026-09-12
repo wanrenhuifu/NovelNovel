@@ -154,7 +154,7 @@ export function TopBar({ openAppSettings, jumpToChapter }: Props) {
       {showExport && activeProject && (
         <ExportModal
           project={activeProject}
-          chapterCount={chapters.length}
+          chapters={chapters}
           onClose={() => setShowExport(false)}
         />
       )}

@@ -1,5 +1,8 @@
 node_modules
 dist
+# dsh 插件产物与打包结果：由 npm run build:plugin / npm pack 生成
+dsh-plugin/lib/
+dsh-plugin/*.tgz
 *.local
 .DS_Store
 .zcode/

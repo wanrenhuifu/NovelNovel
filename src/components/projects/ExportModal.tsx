@@ -1,24 +1,25 @@
 import { useState } from "react";
 import { X, Download, Loader2 } from "lucide-react";
 import type { Project } from "../../types";
-import { exportNovel } from "../../lib/export";
+import { exportNovel, type ExportableChapter } from "../../lib/export";
 
 interface Props {
   project: Project;
-  chapterCount: number;
+  /** 按 sortOrder 排好序的章节（调用方保证顺序），导出时按序合并 */
+  chapters: ExportableChapter[];
   onClose: () => void;
 }
 
-export function ExportModal({ project, chapterCount, onClose }: Props) {
+export function ExportModal({ project, chapters, onClose }: Props) {
   const [format, setFormat] = useState<"md" | "txt">("md");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const doExport = async () => {
+  const doExport = () => {
     setBusy(true);
     setError(null);
     try {
-      await exportNovel(project, format);
+      exportNovel(project, chapters, format);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -47,7 +48,7 @@ export function ExportModal({ project, chapterCount, onClose }: Props) {
         </div>
         <div className="space-y-3 px-4 py-4">
           <p className="text-xs text-ink-400">
-            《{project.title}》共 {chapterCount} 章，按章节顺序合并导出。
+            《{project.title}》共 {chapters.length} 章，按章节顺序合并导出。
           </p>
           <div className="flex gap-2">
             {(

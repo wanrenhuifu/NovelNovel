@@ -1,4 +1,23 @@
-import type { Character, Preset, Project } from "../types";
+import type { LoreEntry, Preset } from "../types";
+
+/**
+ * 提示词组装所需的最小项目/角色形状：浏览器端 Project/Character 天然满足，
+ * dsh 插件端用自己的存储结构传入（文件系统里没有 id 主键与 Blob）。
+ */
+export interface PromptProject {
+  title: string;
+  synopsis: string;
+  worldbuilding: string;
+  authorNote: string;
+  lorebook: LoreEntry[];
+}
+
+export interface PromptCharacter {
+  name: string;
+  description: string;
+  personality: string;
+  scenario: string;
+}
 
 /**
  * 替换 SillyTavern 常用宏。
@@ -16,7 +35,7 @@ export function replaceMacros(
     .replace(/<USER>/gi, userName);
 }
 
-function characterBlock(char: Character): string {
+function characterBlock(char: PromptCharacter): string {
   const name = char.name;
   const parts: string[] = [];
   if (char.description.trim()) {
@@ -31,12 +50,17 @@ function characterBlock(char: Character): string {
   return `### ${name}\n${parts.join("\n")}`;
 }
 
-function lorebookBlock(
-  entries: Project["lorebook"],
+/**
+ * 挑出本次上下文要注入的词条：
+ * 无关键词的条目常驻；有关键词的条目仅当任一关键词（逗号分隔、小写比较）
+ * 出现在续写上下文里才注入。禁用或内容为空的条目一律排除。
+ */
+export function selectLoreEntries(
+  entries: PromptProject["lorebook"],
   contextText: string,
-): string | null {
+): PromptProject["lorebook"] {
   const ctx = contextText.toLowerCase();
-  const active = entries.filter((e) => {
+  return entries.filter((e) => {
     if (!e.enabled || !e.content.trim()) return false;
     const keys = e.keys
       .split(/[,，]/)
@@ -45,6 +69,13 @@ function lorebookBlock(
     if (keys.length === 0) return true; // 无关键词 = 常驻条目
     return keys.some((k) => ctx.includes(k));
   });
+}
+
+function lorebookBlock(
+  entries: PromptProject["lorebook"],
+  contextText: string,
+): string | null {
+  const active = selectLoreEntries(entries, contextText);
   if (active.length === 0) return null;
   const blocks = active
     .map((e) => `### ${e.name.trim() || e.keys}\n${e.content.trim()}`)
@@ -81,11 +112,11 @@ export function renderStoryString(
 
 /** story_string 可用变量：卡片字段按角色聚合并替换宏 */
 function buildStoryVars(
-  project: Project,
-  characters: Character[],
+  project: PromptProject,
+  characters: PromptCharacter[],
   contextText: string,
 ): Record<string, string> {
-  const join = (get: (c: Character) => string): string =>
+  const join = (get: (c: PromptCharacter) => string): string =>
     characters
       .map((c) => replaceMacros(get(c), c.name).trim())
       .filter(Boolean)
@@ -127,8 +158,8 @@ const OUTPUT_RULES = [
  * storyString 替换默认的设定区块组装。
  */
 export function buildSystemPrompt(
-  project: Project,
-  characters: Character[],
+  project: PromptProject,
+  characters: PromptCharacter[],
   contextText = "",
   preset?: Preset | null,
 ): string {

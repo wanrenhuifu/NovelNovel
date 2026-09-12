@@ -8,8 +8,11 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "proxy": "node scripts/proxy.mjs",
+    "build:plugin": "node dsh-plugin/build.mjs",
+    "typecheck:plugin": "tsc -p dsh-plugin",
     "test": "node scripts/test-card-import.mjs && node scripts/test-iteration.mjs && node scripts/test-preset-import.mjs && node scripts/test-ai-retry.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-crypto.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:dsh": "node scripts/verify-dsh.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.8.1",

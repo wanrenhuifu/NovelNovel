@@ -1,6 +1,7 @@
 # AGENTS.md
 
 AI 小说写作 IDE（纯前端 Web 应用，无后端；可选本地 CORS 代理见下）。数据全部存浏览器 IndexedDB（Dexie），API Key 也存本地。UI 文案为简体中文，暗色暖调主题。
+同一仓库还带一个 **DeepSeek Harness (dsh) 插件**（`dsh-plugin/`，见下方「dsh 插件」段）：同一套领域逻辑跑在 harness 上，数据改为工作区文件。
 
 ## 命令
 
@@ -17,6 +18,9 @@ node scripts/test-search.mjs       # 章节全文搜索：命中/摘要/标题/�
 node scripts/test-reorder.mjs      # 章节拖拽排序：边界/位移/规范化/不可变性
 node scripts/test-crypto.mjs       # API Key 加密：enc/dec 往返/错密码/IV 随机/hash 一致性
 npm run test:e2e                   # Playwright E2E（先 npm run build；9 条用例，见 e2e/）
+npm run build:plugin               # 构建 dsh 插件产物 dsh-plugin/lib/index.js（不入库）
+npm run typecheck:plugin           # 插件类型检查：tsc -p dsh-plugin（严格模式，零错误）
+npm run test:dsh                   # 插件端到端验证（先构建 + 装进 profile；见「dsh 插件」段）
 ```
 
 **Playwright 版本注意**：`@playwright/test` 固定 1.60.0——它与本机已下载的 chromium 1223 对应。
@@ -38,17 +42,31 @@ Vite + React 18 + TS（strict、noUnusedLocals/Parameters、verbatimModuleSyntax
 - `src/stores/` Zustand：所有 IndexedDB 写操作走 store（project/characters/settings），组件不直接调 Dexie（`lib/db.ts` 的 getSettings/saveSettings 除外）。
 - `src/components/<feature>/` 按功能分目录；编辑器通过 `forwardRef` 暴露 `EditorHandle`（insertAtEnd/replaceSelection/getContent），供 AI 面板插入生成结果。
 - 新增数据类型放 `src/types.ts`，Dexie 升级要在 `db.ts` 加 version（v2 给旧项目补 `lorebook: []`；v3 加 `chatSessions` 表，projectId 为主键）。给 `AppSettings` 加新字段**不需要**加 Dexie version——`getSettings` 会用 `defaultSettings` 兜底补齐旧记录缺失的键（如 `presets`/`activePresetId`）。
+- `dsh-plugin/`：DeepSeek Harness 插件包（npm 包名 `dsh-novelnovel`，`dsh.bundle.patch` 指向 `cordis.patch.yml`，向 profile 插入一行 `id: novelnovel`）。`src/index.ts` 挂起存储 + 7 个 `novel_*` 工具 + 2 个技能 + `/novel` 命令 + 系统提示词段（order 4500）；`src/store.ts` 是工作区文件存储（作品/章节/词条/角色卡/预设，`ctx.fs` 读写）；`src/fsx.ts` 封装 `ctx.fs` 的解析/读写/删除/二进制；`src/tools/*.ts` 一个工具一个文件；`src/contract.ts` 是手写的 harness API 最小类型契约（**只有类型、没有运行时**）；`src/harness.ts` 在运行时解析 `@deepseek-ai/*`；`skills/*/SKILL.md` 由 `src/skills.ts` 读盘后经 `ctx.skills.register` 运行时注册。构建走 esbuild（`build.mjs`），产物 `dsh-plugin/lib/` 不入库。领域逻辑全部复用 `src/lib`，不另写一份。
 
 ## 约定
 
 - 主题色只用 `src/index.css` `@theme` 里的 token：`ink-950…100`、`paper`、`accent-400/500/600`。**不要**用未定义的色阶（如 `ink-500`）——Tailwind v4 不生成不存在的 token。状态色可少量用 red/emerald/amber 默认调色板（amber 用于重试等等待态提示）。
 - lucide-react 图标必须真实存在（曾因 `CloudCheck` 不存在换过 `Check`），不确定就查 node_modules。
 - 弹窗一律内联 modal（`components/*/...Modal.tsx`），**禁用 `window.prompt/confirm/alert`**。
+- dsh 插件的工具 `description` 与参数说明用英文（harness 没有工具 schema 的本地化机制），技能正文、README 与代码注释用中文；只读类工具声明 `isConcurrencySafe`，危险操作要求 `confirm=true`。新增工具放 `src/tools/<name>.ts` 并在 `src/tools/index.ts` 注册。
 - 代码注释用中文，只写约束性说明。
 
 ## 坑（改相关代码前必读）
 
-- **角色卡**：`@lenml/char-card-reader` 把 V1 卡的 `spec` 标为 `"unknown"`；`cardImport.ts` 的 `specToVersion` 把非 v2/v3 归为 v1，别"修复"它。PNG 导入时 avatar 直接存上传的 Blob；JSON 导入时从 `get_avatar()` data URL 转 Blob。`rawData` 字段必须无损保留原始 JSON。
+- **dsh 插件 · harness 依赖**：`@deepseek-ai/*` 声明为 peer + esbuild `external`，**绝不能内联**——服务按模块实例注册，产物里第二份会重复注册。以 `link:` 方式安装时包在工作区之外，Node 从包 realpath 找不到 harness 的依赖闭包，所以 `src/harness.ts` 按「普通 import → harness 进程入口 `process.argv[1]` → `$DSH_HOME/profiles` 与 cwd」依次解析，命中即用，保证与运行中的 harness 是同一模块实例。`@lenml/char-card-reader` 是 AGPL，只做 external + `dependencies`，不打进产物。
+- **dsh 插件 · 工具参数名就是 schema 键**：`defineTool` 的 `args` 类型由 `parameters` 推导（`contract.ts` 的 `InferArgs`），schema 里写 `author_note`/`prev_chapters` 这类 snake_case，代码里就必须同名访问——改 schema 键名不改进代码会直接 tsc 报错（有意的防漂移，别用 `any` 绕）。
+- **dsh 插件 · 写文件**：`ctx.fs.writeText` 传 `{kind:'createIfAbsent'}` 命中已存在文件会报 `FS_NOT_OBSERVED`（本地后端要求先读后写），所以 `fsx.ts` 先 `stat`：已存在用 `replaceIfVersion`（带 stale 校验），不存在用 `createIfAbsent`，写完 `emit('fs/observed')` 并**把触发调用的 exec 作为第三参传入**（`FsSession.actor`）——harness 的 observation policy 只对能解析出 session 的 actor 记录观察（`if (owner) this.set(...)`），不传就等于这些写入对「先读后写」策略不存在，首方 `write`/`edit` 之后会被要求先读一遍。`ctx.fs` 没有删除与二进制写入能力，删文件/写 PNG 头像是 `node:fs` + `ctx.fs.processPath`——这条路径**不受沙箱约束**，因此 `assertInsideWorkspace` 用 `ctx.fs.contains` 限定只能落在会话工作目录内（别删掉这个检查，`novel_character action=export out_path=` 是 agent 可控参数）。
+- **dsh 插件 · `ctx.waterfall` 的末参是 fallback**：`ctx.waterfall(event, ...args, fallback)`——不给 fallback 时，最后一个业务参数会被当成 fallback 吞掉（表现为监听器收到的 `actor` 是 undefined，极易误判成"策略不记录"）。测试里要写成 `ctx.waterfall('fs/write-intent', target, exec, () => undefined)`。
+- **dsh 插件 · 损坏数据文件的处理分级**：`project.json` 读不出来 → 跳过该作品目录并在 `novel_project action=list` 里点名；`workspace.json` 读不出来 → 不致命，但多作品时解析「当前作品」必须显式传 `project=`（宁可报错也不猜，避免写错作品）；`chapters/index.json` 读不出来 → 直接报错（静默当空索引会让下次建章覆盖整份目录）。数据文件是给人手改的，`readJson` 容忍 BOM/CRLF。
+- **dsh 插件 · 复用 src/lib 的边界**：`export.ts` **不得** import `db.ts`（会把 Dexie 打进插件产物，Node 端也不该有 IndexedDB），所以 `exportNovel` 由调用方传入章节（ExportModal 从 TopBar 取 store 里的 chapters）。`prompt.ts` 用 `PromptProject`/`PromptCharacter` 窄类型（浏览器端 `Project`/`Character` 天然满足）；`search.ts`/`reorder.ts` 的 id 泛化为 `string | number`，两端共用同一套语义。
+- **dsh 插件 · 技能注册**：不用 `skill-filesystem` 的 `customSkillDirs`——那是 `dsh-base` 的行 config，覆盖它要重述整份 config（patch 是整行替换），随上游变化即失效；改走 `ctx.skills.register`（rank 250，项目级技能 rank 100/200 仍可覆盖同名插件技能）。SKILL.md 里 `disable-model-invocation` / `user-invocable` 是正规键，`modelInvocable` 这类旧键会被 harness 直接拒绝。
+- **dsh 插件 · 破坏性操作与 `slice(-0)`**：删作品/章节/角色卡都必须 `confirm=true` 才执行（提示先问用户）。`recent_chars`/`prev_chars` 为 0 时要显式判 `> 0` 再 `slice(-n)`——`slice(-0)` 等于 `slice(0)`，会取到整章（`context.ts` 与 `store.previousExcerpts` 各有一处）。
+- **dsh 插件 · 解析作品与统计字数分开**：`resolveProjectId` 走 `listProjectRefs`（每个作品只读 `project.json` + `chapters/index.json`），而读遍全书算字数的 `listProjects` 只服务 `novel_project action=list` 与 `/novel list`；`previousExcerpts` 先用 `listChapterMetas` 定位再按需读正文。别把正文读回解析路径——实测一次 `action=append` 的 `ctx.fs` 调用会从 39 涨到 1839（409ms→47ms）；`tests/perf-probe.mjs` 可复测（带调用计数）。
+- **dsh 插件 · patch 用具名类型**：`update*` 的 patch 一律用 `store.ts` 导出的 `ProjectPatch`/`ChapterMetaPatch`/`CharacterPatch`/`LorebookPatch`/`PresetPatch`，**不要**写 `Record<string, …>`——后者能让打错的 camelCase 键通过编译，结果既没写进文件、又在返回里报告"已更新"（静默无操作）。
+- **dsh 插件 · 预设与文件名的不变量**：同名预设重导入必须**沿用原 id**（否则 `activePresetId` 悬空 → 简报静默退回内置默认提示词，而列表仍显示有激活项）；章节正文按 `<chapterId>.md` 存放、角色卡按 `<id>.json` + 头像按真实媒体类型的扩展名存放，id 一旦生成不再改名（`ctx.fs` 没有 rename，重命名会牵动全部引用）。
+- **dsh 插件 · 安装与调试**：改完 `src/` 必须 `npm run build:plugin`（`lib/` 不入库，profile 加载的是产物）；`link:` 安装后改动只需重建 + 重开 dsh 会话，tarball 安装则要重新 `npm pack` + `dsh plugin add`。端到端验证：`npm run test:dsh`（在 profile 目录里跑，因为 `@deepseek-ai/*` 由 profile 的 node_modules 提供）。
+- **角色卡**：`@lenml/char-card-reader` 把 V1 卡的 `spec` 标为 `"unknown"`；`cardImport.ts` 的 `specToVersion` 把非 v2/v3 归为 v1，别"修复"它。PNG 导入时 avatar 存原始字节（浏览器包装层转 Blob，dsh 插件层直接写 PNG 文件）；JSON 导入时把 `get_avatar()` 的 data URL 解成字节。`rawData` 字段必须无损保留原始 JSON。`parseCharacterFile` 是 `parseCharacterBytes` 的浏览器包装。
 - **世界书导入**：`cardImport.ts` 的 `extractLorebookEntries` 把 character_book 词条并入项目 lorebook。`{{char}}`/`{{user}}` 宏**在导入时**就按来源卡名/“主角”替换（`replaceMacros`）——项目 lorebook 混合多卡来源，留到组装时已无法确定 `{{char}}` 指向谁；关键词 `keys` 保持原文不替换（要用于上下文匹配）。词条名优先 `entry_name`→`name`→`comment`→首个关键词；空内容条目直接丢弃；`enabled` 缺失视为启用。`parseCharacterFile` 返回 `{character, loreEntries}`，词条 id 由 `stores/characters.ts` 生成，最终由 CharactersPanel 经 `updateProject` 并入——别在 characters store 里直接写 projects 表。
 - **PNG 再导出**：`export.ts` 把任意来源的卡统一转 V2 结构写 `chara` chunk，有 V3 rawData 时另写 `ccv3`（读取端 ccv3 优先）。头像非 PNG 时用纯色占位 PNG。TS 5.8 下传给 Blob 的必须是 `Uint8Array<ArrayBuffer>`，不能用 `ArrayBufferLike`。
 - **Lorebook 注入**：`prompt.ts` 的 `lorebookBlock` —— 词条 keys 为空=常驻注入；有 keys 时仅当任一关键词（逗号分隔、小写比较）出现在续写上下文里才注入。改注入语义时同步更新 LorebookModal 的说明文案。
