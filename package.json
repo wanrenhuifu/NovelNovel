@@ -2,6 +2,7 @@
   "name": "novelnovel",
   "private": true,
   "version": "0.1.0",
+  "description": "NovelNovel — AI 小说写作工作台：浏览器端 IDE（章节编辑 / 角色卡 / Lorebook / AI 续写）+ DeepSeek Harness 插件（dsh-plugin/）",
   "type": "module",
   "scripts": {
     "dev": "vite",

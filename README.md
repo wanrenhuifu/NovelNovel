@@ -1,6 +1,9 @@
-# NovelNovel · AI 小说写作 IDE
+# NovelNovel · AI 小说写作 IDE + DeepSeek Harness 插件
 
-一个跑在浏览器里的 AI 小说写作工作台：章节编辑、SillyTavern 角色卡导入、世界观 Lorebook、AI 续写，全部数据保存在本地（IndexedDB），无需后端服务器。
+一个 AI 小说写作工作台，两种用法，共用 `src/lib` 的同一份领域逻辑（角色卡解析 / 预设解析 / 提示词组装 / 词条匹配 / 章节排序 / 全文搜索 / PNG 卡读写）：
+
+- **浏览器端 IDE**：章节编辑、SillyTavern 角色卡导入、世界观 Lorebook、AI 续写；数据存本地 IndexedDB，无需后端服务器。
+- **DeepSeek Harness 插件**（`dsh-plugin/`）：harness 的 agent 直接用 `novel_*` 工具写作、查卡、维护设定，数据落工作区文件；原本由应用自己调 LLM 的续写改由 harness 承担。安装与用法见 [dsh-plugin/README.md](dsh-plugin/README.md)。
 
 ## 启动
 
