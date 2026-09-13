@@ -25,6 +25,18 @@ DSH_PROFILE=web npm run test:dsh # 指定其它 profile
 想装到已有的 `web` profile，把 profile 名换成 `web` 即可。
 分发时用 `npm pack` 产出的 tarball 安装：插件会被复制进 profile 的 `node_modules`，不依赖本仓库工作树。
 
+## 兼容性
+
+已在两套环境验证（`npm run test:dsh` 35 项全过 + 真实 headless 会话）：
+
+- `@deepseek-ai/dsh@0.1.5-rc.1`（npm 上的 `latest`，其子包解析为 `0.1.5-rc.2`）
+- `@deepseek-ai/dsh@0.1.2-rc.1` CLI + `0.1.3-alpha.2` 子包（本机 source checkout 环境）
+
+`package.json` 的 peerDependencies 用通配 `*`：插件运行时由 `src/harness.ts` 解析 harness 自己的包实例
+（保证与运行中的 harness 同模块实例），不在依赖层面锁版本。`src/contract.ts` 镜像的 API 面已在
+`0.1.3-alpha.2` 与 `0.1.5-rc.2` 之间逐项比对，无签名差异——升级 harness 后重跑一次
+`npm run test:dsh` 即可确认。
+
 ## 用法
 
 在装了插件的 profile 里开一个会话，直接用自然语言提写作需求即可；系统提示词会引导 agent 使用这些工具：
@@ -131,7 +143,7 @@ npm run test:dsh    # 端到端验证（需要已安装的 profile）
 `npm run test:dsh` 会拉起真实 harness 服务（SystemPrompt + ToolRuntime + LocalFileSystem +
 SkillRegistry + observation policy）并驱动全部工具：作品/章节/词条/角色卡（含 PNG 双写回读）/预设/
 简报组装/关键词注入命中与未命中/检索/导出/技能注册/命令处理器/配置校验/工作区边界与损坏文件容错/
-观察记录归属/卸载清理，共 34 项检查，不调用模型。`npm test` 是它的快速补充：4 个纯逻辑单测直接
+观察记录归属/卸载清理/系统提示词段，共 35 项检查，不调用模型。`npm test` 是它的快速补充：4 个纯逻辑单测直接
 测 `src/domain/` 里的解析与组装函数。
 
 `tests/perf-probe.mjs` 是性能探针（在 profile 目录里跑）：铺 3 部 × 200 章，

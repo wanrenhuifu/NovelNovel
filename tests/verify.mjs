@@ -43,6 +43,17 @@ await ctx.plugin(SystemPrompt);
 await ctx.plugin(ToolRuntime);
 await ctx.plugin(LocalFileSystem, { cwd: workspace });
 await ctx.plugin(SkillRegistry);
+
+// 记录系统提示词段的注册：这是工具/技能/命令之外的第四个挂载面，
+// 注册失败只会让 fiber 报错而不影响其余工具，不盯住就会静默丢失。
+const promptSections = [];
+const systemPromptService = ctx.systemPrompt;
+const registerSection = systemPromptService.section.bind(systemPromptService);
+systemPromptService.section = (section) => {
+  promptSections.push(section);
+  return registerSection(section);
+};
+
 const pluginFiber = await ctx.plugin(plugin, { dataDir: ".novelnovel" });
 
 console.log(`workspace: ${workspace}`);
@@ -388,6 +399,18 @@ assert.ok(skills.includes("novel-cards"), "novel-cards skill 应注册");
 const writing = await ctx.skills.get("novel-writing");
 assert.ok(writing?.content.includes("novel_context"), "技能正文应来自 SKILL.md");
 ok("runtime skills registered", skills.filter((name) => name.startsWith("novel")).join(", "));
+
+// ── 系统提示词段：插件应注册一段引导（order 4500）
+
+step("system prompt section");
+const promptSection = promptSections.find((section) => section.name === "novelnovel:workspace");
+assert.ok(promptSection, "插件应注册系统提示词段 novelnovel:workspace");
+assert.equal(promptSection.order, 4500, "order 应与首方工具说明相邻");
+const promptText =
+  typeof promptSection.text === "function" ? promptSection.text({}) : promptSection.text;
+assert.ok(promptText.includes("novel_*"), "提示词段应点名工具家族");
+assert.ok(promptText.includes("novel_context"), "提示词段应引导先取写作简报");
+ok("prompt section registered", `order=${promptSection.order}, ${promptText.length} chars`);
 
 // ── /novel 斜杠命令
 // 真品 CommandRuntime 依赖 typert 服务栈，这里用一个只记录注册的 commands 服务替身，

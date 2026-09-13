@@ -14,7 +14,7 @@ node scripts/test-card-import.mjs   # 角色卡解析链路（PNG V2 / ccv3 双�
 node scripts/test-preset-import.mjs # 预设导入解析 + story_string 渲染 + 提示词组装 + 截断
 node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/上限/顺序
 node scripts/test-reorder.mjs       # 章节排序：边界/位移/规范化/不可变性
-npm run test:dsh                    # 34 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 35 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 node tests/perf-probe.mjs           # 性能探针（在 profile 目录里跑，带 ctx.fs 调用计数）
 ```
 
