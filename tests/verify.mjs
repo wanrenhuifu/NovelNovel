@@ -11,10 +11,10 @@
  * 以及技能注册与 config 校验。不调用任何模型。
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(join(process.cwd(), "anchor.mjs"));
@@ -38,6 +38,9 @@ const { default: SkillRegistry } = await load("@deepseek-ai/dsh-skill");
 const plugin = await load("dsh-novelnovel");
 
 const workspace = mkdtempSync(join(tmpdir(), "nn-dsh-"));
+// novel_skill 按 harness 的口径把项目技能写到「最近的含 .git 的祖先目录」下；没有 .git 时会退化成 cwd，
+// 结果相同，但显式放一个能让「项目根探测」在测试里确定下来（临时目录的祖先里可能有仓库）。
+mkdirSync(join(workspace, ".git"), { recursive: true });
 const ctx = new Context();
 await ctx.plugin(SystemPrompt);
 await ctx.plugin(ToolRuntime);
@@ -98,6 +101,7 @@ assert.deepEqual(toolNames, [
   "novel_lorebook",
   "novel_preset",
   "novel_project",
+  "novel_skill",
 ]);
 ok(`${toolNames.length} novel_* tools visible to the model`, toolNames.join(", "));
 
@@ -394,11 +398,119 @@ ok("backup export", `${backupJson.characters.length} cards, ${backupJson.loreboo
 
 step("skills");
 const skills = (await ctx.skills.list()).map((skill) => skill.name);
-assert.ok(skills.includes("novel-writing"), "novel-writing skill 应注册");
-assert.ok(skills.includes("novel-cards"), "novel-cards skill 应注册");
+// 不硬编码技能名：加了一个 SKILL.md 却因为 frontmatter 写错而静默注册失败，是最容易漏的一类回归
+const bundledDir = join(dirname(require.resolve("dsh-novelnovel/package.json")), "skills");
+const bundled = readdirSync(bundledDir)
+  .map((entry) => {
+    const file = join(bundledDir, entry, "SKILL.md");
+    if (!existsSync(file)) return null;
+    const match = /^---\r?\n[\s\S]*?^name:\s*(.+)$/m.exec(readFileSync(file, "utf8"));
+    return (match ? match[1] : entry).trim().replace(/^["']|["']$/g, "");
+  })
+  .filter((name) => name !== null);
+assert.ok(bundled.length >= 6, `skills/ 下的技能应被枚举到，实际 ${bundled.length} 个`);
+for (const name of bundled) {
+  assert.ok(skills.includes(name), `技能 ${name} 应注册（检查它的 SKILL.md）`);
+}
 const writing = await ctx.skills.get("novel-writing");
 assert.ok(writing?.content.includes("novel_context"), "技能正文应来自 SKILL.md");
-ok("runtime skills registered", skills.filter((name) => name.startsWith("novel")).join(", "));
+const craft = await ctx.skills.get("novel-prose");
+assert.ok((craft?.content.length ?? 0) > 500, "写作方法技能应带完整正文");
+ok("runtime skills registered", `${bundled.length} bundled: ${bundled.join(", ")}`);
+
+// ── 项目级技能：novel_skill 的导入 / 列表 / 导出 / 删除往返
+// 落盘位置是 harness 自己的技能根（项目根 .dsh/skills），加载由 harness 负责，这里只验证文件写得对。
+
+step("novel_skill (project skills)");
+const skillsRoot = join(workspace, ".dsh", "skills");
+const emptyList = await call("novel_skill", { action: "list" });
+assert.equal(emptyList.details.skills.length, 0, "还没有技能时应报空");
+
+const packFile = (name, body) => {
+  writeFileSync(join(workspace, name), `${JSON.stringify(body, null, 2)}\n`);
+};
+packFile("pack.json", {
+  name: "测试方法包",
+  version: "1.0.0",
+  skills: [
+    { name: "test-craft", description: "A test craft skill.", whenToUse: "测试", content: "# Test\n\nBody." },
+    { name: "test-pacing", description: "A test pacing skill.", content: "# Pacing\n\nBody." },
+  ],
+});
+const importedPack = await call("novel_skill", { action: "import", path: "pack.json" });
+assert.equal(importedPack.details.skills.length, 2);
+assert.deepEqual(importedPack.details.skills.map((s) => s.name), ["test-craft", "test-pacing"]);
+assert.ok(importedPack.details.skills.every((s) => !s.overwritten), "首次导入不算覆盖");
+
+const craftFile = join(skillsRoot, "test-craft", "SKILL.md");
+assert.ok(existsSync(craftFile), "导入应把 SKILL.md 落到项目根的 .dsh/skills");
+const craftText = readFileSync(craftFile, "utf8");
+assert.ok(craftText.includes("whenToUse: 测试"), "frontmatter 应带上 whenToUse");
+assert.ok(craftText.includes("# Test"), "正文应落盘");
+assert.ok(
+  existsSync(join(skillsRoot, "test-craft", ".novelnovel-skill.json")),
+  "应写入导入标记（否则之后删不掉）",
+);
+ok("import pack", importedPack.details.skills.map((s) => s.path).join(", "));
+
+const projectSkillList = await call("novel_skill", { action: "list" });
+assert.deepEqual(projectSkillList.details.skills.map((s) => s.name), ["test-craft", "test-pacing"]);
+assert.ok(projectSkillList.details.skills.every((s) => s.imported), "应标注为导入的");
+ok("list project skills", `${projectSkillList.details.skills.length} skills`);
+
+// 校验失败必须整体中止：不能写一半才发现第二个技能名非法
+packFile("bad-pack.json", {
+  skills: [
+    { name: "would-be-written", description: "Fine.", content: "Body." },
+    { name: "Not Kebab", description: "Broken.", content: "Body." },
+  ],
+});
+await assert.rejects(
+  () => call("novel_skill", { action: "import", path: "bad-pack.json" }),
+  /not kebab-case/,
+);
+assert.ok(!existsSync(join(skillsRoot, "would-be-written")), "校验失败时不应写一半");
+
+// 手写技能（没有标记）一律不动：覆盖要 overwrite，删除直接拒绝
+const handWritten = join(skillsRoot, "hand-written", "SKILL.md");
+mkdirSync(dirname(handWritten), { recursive: true });
+writeFileSync(handWritten, "---\nname: hand-written\ndescription: Hand written.\n---\n\nBody.\n");
+packFile("collide.json", {
+  skills: [{ name: "hand-written", description: "Replacement.", content: "Body." }],
+});
+await assert.rejects(
+  () => call("novel_skill", { action: "import", path: "collide.json" }),
+  /not imported by novel_skill/,
+);
+assert.ok(
+  readFileSync(handWritten, "utf8").includes("Hand written."),
+  "被拒绝的导入不应改动手写技能",
+);
+ok("hand-written skills are left alone");
+
+// 删除：手写的拒绝，导入的必须 confirm
+await assert.rejects(
+  () => call("novel_skill", { action: "remove", name: "hand-written", confirm: true }),
+  /not imported by novel_skill/,
+);
+await assert.rejects(() => call("novel_skill", { action: "remove", name: "test-craft" }), /confirm=true/);
+const removed = await call("novel_skill", { action: "remove", name: "test-craft", confirm: true });
+assert.equal(removed.details.name, "test-craft");
+assert.ok(!existsSync(join(skillsRoot, "test-craft")), "删除应移除整个技能目录");
+ok("remove requires confirm and only touches imported skills");
+
+// 导出：复现导入标记里的包名，且产物必须能原样再导入
+const exportedCall = await call("novel_skill", { action: "export", name: "test-pacing" });
+const exportFile = join(workspace, ".novelnovel", "skillpacks", "test-pacing.json");
+assert.ok(existsSync(exportFile), `导出的技能包应落在 <dataDir>/skillpacks/（${exportedCall.details.path}）`);
+const repack = JSON.parse(readFileSync(exportFile, "utf8"));
+assert.equal(repack.name, "测试方法包", "导出应沿用导入标记里的包名");
+assert.equal(repack.skills[0].name, "test-pacing");
+packFile("roundtrip.json", repack);
+const reimported = await call("novel_skill", { action: "import", path: "roundtrip.json" });
+assert.equal(reimported.details.skills[0].name, "test-pacing");
+assert.ok(reimported.details.skills[0].overwritten, "再导入同一个技能应报告为覆盖");
+ok("export pack → re-import", exportedCall.details.path);
 
 // ── 系统提示词段：插件应注册一段引导（order 4500）
 
@@ -565,7 +677,8 @@ step("plugin unload");
 const novelToolCount = () => ctx.tools.schemas().filter((s) => s.name.startsWith("novel_")).length;
 const novelSkillCount = async () =>
   (await ctx.skills.list()).filter((s) => s.name.startsWith("novel")).length;
-assert.ok(novelToolCount() === 7);
+// 工具清单由开头的断言固定，这里不重复硬编码数量，只确认卸载前确实都还在
+assert.equal(novelToolCount(), toolNames.length, "卸载前应有全部工具");
 await pluginFiber.dispose();
 assert.equal(novelToolCount(), 0, "卸载后工具应全部注销");
 assert.equal(await novelSkillCount(), 0, "卸载后技能应全部注销");

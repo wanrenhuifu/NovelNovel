@@ -20,7 +20,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc -p .",
-    "test": "node scripts/test-card-import.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs",
+    "test": "node scripts/test-card-import.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs",
     "test:dsh": "node scripts/verify-dsh.mjs"
   },
   "dsh": {

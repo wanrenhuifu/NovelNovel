@@ -7,6 +7,7 @@ import { registerExportTool } from "./export";
 import { registerLorebookTool } from "./lorebook";
 import { registerPresetTool } from "./preset";
 import { registerProjectTool } from "./project";
+import { registerSkillTool } from "./skill";
 
 export function registerTools(deps: ToolDeps): void {
   registerProjectTool(deps);
@@ -14,6 +15,7 @@ export function registerTools(deps: ToolDeps): void {
   registerCharacterTool(deps);
   registerLorebookTool(deps);
   registerPresetTool(deps);
+  registerSkillTool(deps);
   registerContextTool(deps);
   registerExportTool(deps);
 }

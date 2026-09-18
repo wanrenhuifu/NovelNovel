@@ -4,17 +4,21 @@ DeepSeek Harness (dsh) 插件（npm 包 `dsh-novelnovel`）：把小说写成**�
 agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出。纯 Node 包——没有 UI、不发模型请求
 （模型由 harness 提供），数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
 
+写作方法由技能承载：6 个技能随包注册（rank 250），用户自己的方法用 `novel_skill` 导入到项目根的
+`.dsh/skills/`（rank 100，会覆盖同名内置技能）——那是唯一落在 `<dataDir>` 之外的写入。
+
 ## 命令
 
 ```bash
 npm run build       # esbuild → lib/index.js（lib/ 不入库；改完 src 必须重建，profile 加载的是产物）
 npm run typecheck   # tsc -p .（严格模式，noUnusedLocals/Parameters，零错误才过）
-npm test            # 4 个纯逻辑单测（下面 4 个脚本）
+npm test            # 5 个纯逻辑单测（下面 5 个脚本）
 node scripts/test-card-import.mjs   # 角色卡解析链路（PNG V2 / ccv3 双写 / JSON / V1 / 世界书并入）
 node scripts/test-preset-import.mjs # 预设导入解析 + story_string 渲染 + 提示词组装 + 截断
 node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/上限/顺序
 node scripts/test-reorder.mjs       # 章节排序：边界/位移/规范化/不可变性
-npm run test:dsh                    # 35 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+node scripts/test-skill-pack.mjs    # 技能包解析 + SKILL.md frontmatter 往返 + 项目根祖先链
+npm run test:dsh                    # 40 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 node tests/perf-probe.mjs           # 性能探针（在 profile 目录里跑，带 ctx.fs 调用计数）
 ```
 
@@ -30,23 +34,31 @@ node tests/perf-probe.mjs           # 性能探针（在 profile 目录里跑，
 - `src/contract.ts` 手写的 harness API 最小类型契约（**只有类型、没有运行时**）；运行时真品由
   `src/harness.ts` 解析（`src/harness.ts` 的解析顺序见「坑」）。
 - `src/store.ts` 工作区文件存储（作品/章节/词条/角色卡/预设）+ `NovelStore` 的 patch 具名类型；
-  `src/fsx.ts` 封装 `ctx.fs`（解析/读写/目录/删除/二进制）与会话构造；`src/types.ts` 落盘结构。
+  `src/skillStore.ts` 管**项目级**技能文件（项目根 `.dsh/skills/` 的列出/导入/导出/删除，加载仍由
+  harness 负责，不新增技能机制）；`src/fsx.ts` 封装 `ctx.fs`（解析/读写/目录/删除/二进制）与会话构造；
+  `src/types.ts` 落盘结构。
 - `src/tools/<name>.ts` 一个工具一个文件，`src/tools/index.ts` 注册；`src/tools/shared.ts` 放统一输出
-  形状（`TEXT_OUTPUT`/`textRender`）、`lines`/`preview`/`requireFields`。
-- `src/skills.ts` 枚举 `skills/*/SKILL.md` 并 `ctx.skills.register` 运行时注册；`src/command.ts`
-  是 `/novel` 命令（把当前作品状态以文本返回，不经过模型）。
-- `src/domain/` 纯逻辑，**不 import harness、不碰文件系统**：`cardImport.ts`（角色卡解析 +
-  世界书提取）、`presetImport.ts`、`prompt.ts`（系统提示词组装、宏替换、词条注入、续写消息拼装）、
-  `search.ts` / `reorder.ts`（id 泛化为 `string | number`）、`export.ts`（正文拼装 + 角色卡 PNG 再导出）、
-  `png.ts`（chunk 读写 + deflate）、`utils.ts`、`types.ts`。
+  形状（`TEXT_OUTPUT`/`textRender`）、`lines`/`preview`/`requireFields` 与 `ToolDeps`。
+- `src/skills.ts` 枚举 `skills/*/SKILL.md` 并 `ctx.skills.register` 运行时注册（另导出
+  `bundledSkillNames` 供 novel_skill 判断同名覆盖）；`src/command.ts` 是 `/novel` 命令
+  （把当前作品状态以文本返回，不经过模型）。
+- `src/domain/` 纯逻辑，**不 import harness、不碰文件系统**（连 `node:*` 都不引，路径运算自己写）：
+  `cardImport.ts`（角色卡解析 + 世界书提取）、`presetImport.ts`、`prompt.ts`（系统提示词组装、宏替换、
+  词条注入、续写消息拼装）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
+  `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
+  `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
+  项目根祖先链）、`utils.ts`、`types.ts`。
 - `tests/verify.mjs` 端到端；`scripts/verify-dsh.mjs` 是它的启动器（切 cwd 到 profile）；
   `samples/preset-example.json` 供测试导入预设用。
 
 ## 约定
 
-- 工具 `description` 与参数说明用**英文**（harness 没有工具 schema 的本地化机制）；技能正文、
-  README、代码注释用中文。只读类工具声明 `isConcurrencySafe`，会写文件的不要声明。
-- 危险操作（删作品/章节/角色卡）必须 `confirm=true` 才执行，错误信息提示先问用户。
+- 模型可见的字符串用**英文**：工具 `description`/参数说明/`summary`，以及 SKILL.md 的 frontmatter
+  与正文（`description` 就是模型唯一能看到的路由判据，harness 对工具 schema 和技能都没有本地化
+  机制）。中文留给 README、AGENTS.md、代码注释；但 `whenToUse` 里要保留中文触发词（`润色`/`断章`
+  这类），否则用户用中文提问时技能匹配不上。只读类工具声明 `isConcurrencySafe`，会写文件的不要声明。
+- 危险操作（删作品/章节/角色卡/导入的技能）必须 `confirm=true` 才执行，错误信息提示先问用户；
+  会覆盖别人文件的（技能包导入）用 `overwrite=true` 同理。
 - `update*` 的 patch 用 `store.ts` 导出的具名类型，不写 `Record<string, …>`。
 - 新增工具：`src/tools/<name>.ts` + 在 `src/tools/index.ts` 注册；模型可见的字符串
   （description/parameters/summary）改动要同步 README 的工具表。
@@ -81,7 +93,19 @@ node tests/perf-probe.mjs           # 性能探针（在 profile 目录里跑，
 - **技能注册**：不用 `skill-filesystem` 的 `customSkillDirs`——那是 `dsh-base` 的行 config，覆盖它要
   重述整份 config（patch 是整行替换），随上游变化即失效；改走 `ctx.skills.register`（rank 250，
   项目级技能 rank 100/200 仍可覆盖同名插件技能）。SKILL.md 里 `disable-model-invocation` /
-  `user-invocable` 是正规键，`modelInvocable` 这类旧键会被 harness 直接拒绝。
+  `user-invocable` 是正规键，`modelInvocable` 这类旧键会被 harness 直接拒绝。技能名必须是
+  kebab-case `^[a-z0-9]+(?:-[a-z0-9]+)*$`，不合规的候选会被本地 provider 判为 malformed——所以
+  `parseSkillFile` 在**解析阶段**就校验，而不是等 harness 静默丢掉它。
+- **项目级技能的落点是「最近的含 `.git` 的祖先目录」**，不是 cwd——harness 的本地 provider 就这么解析
+  项目根。会话开在 git 仓库子目录里时项目根在 cwd 之外，而插件不往工作区外写，所以
+  `SkillStore.skillsRoot` 用 `ctx.fs.contains` 校验后**拒绝**并说明原因，而不是默默写到
+  `<cwd>/.dsh/skills` 让工具报成功、harness 却永远不加载（祖先链是 `skillPack.ancestorDirs`，
+  纯字符串运算，`\` 与 `/` 都容忍；漏了 `parent === current` 的终止条件会让单段相对路径死循环，
+  单测里专门盯了这条）。导入先全量校验再落盘；没有 `.novelnovel-skill.json` 标记的技能（用户手写的）
+  一律不覆盖、不删除。标记写在技能目录里当普通资源文件——harness 只把 SKILL.md 当目录变更。
+- **frontmatter 是逐行 `key: value` 解析的**：`description`/`whenToUse` 里混进换行会静默吃掉后面
+  所有字段，所以技能包导入时就把多行值拦下来（`requireSingleLine`），渲染后还回读一次自证
+  （`renderPackedSkill`）。只按行内第一个冒号切分，所以值里带冒号是合法的。
 - **`slice(-0)` 陷阱**：`recent_chars`/`prev_chars` 为 0 时要显式判 `> 0` 再 `slice(-n)`，
   否则 `slice(-0)` 等于 `slice(0)`，会取到整章（`tools/context.ts` 与 `store.previousExcerpts` 各一处）。
 - **解析作品与统计字数分开**：`resolveProjectId` 走 `listProjectRefs`（每个作品只读 `project.json` +
@@ -122,4 +146,7 @@ node tests/perf-probe.mjs           # 性能探针（在 profile 目录里跑，
 - `README.md`：安装、工具表、配置、数据布局、设计说明。
 - dsh 插件开发文档（本机源码 checkout）：`/d/DSH/deepseek-harness/docs/user/develop/**`；
   真实 API 以 `packages/**/src` 与 profile 里的 `@deepseek-ai/*` 为准。
+- 技能子系统（rank 表、frontmatter 键、注册与覆盖语义）：
+  `/d/DSH/deepseek-harness/docs/subsystems/skills.md`——注意 `docs/user/develop/**` 里
+  **一次都没提过技能**，外部作者无从得知这条扩展路径，改技能相关代码时以子系统文档为准。
 - 角色卡规范：SillyTavern V2/V3 spec（character-card-spec-v2 / v3）。

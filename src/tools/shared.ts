@@ -1,11 +1,13 @@
 /** 工具共用的输出形状与文本渲染 */
 import type { ContentBlock, SchemaNode } from "../contract";
 import type { NovelConfig, NovelStore } from "../store";
+import type { SkillStore } from "../skillStore";
 import type { Context, DefineTool } from "../contract";
 
 export interface ToolDeps {
   ctx: Context;
   store: NovelStore;
+  skillStore: SkillStore;
   config: NovelConfig;
   defineTool: DefineTool;
 }

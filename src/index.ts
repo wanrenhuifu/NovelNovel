@@ -1,14 +1,15 @@
 /**
  * dsh-novelnovel 插件入口。
  *
- * 一行配置同时挂起：作品/章节/角色卡/世界书/预设的文件存储、7 个 novel_* 工具、
- * 2 个技能、/novel 斜杠命令与一小段系统提示词。
+ * 一行配置同时挂起：作品/章节/角色卡/世界书/预设的文件存储、8 个 novel_* 工具、
+ * 6 个技能、/novel 斜杠命令与一小段系统提示词。
  * 全部通过 ctx 注册，插件卸载时由 Cordis 自动撤销。
  */
 import type { Context, DefineTool } from "./contract";
 import { registerNovelCommand } from "./command";
 import { loadHarnessModule } from "./harness";
 import { registerSkills } from "./skills";
+import { SkillStore } from "./skillStore";
 import { NovelStore, type NovelConfig } from "./store";
 import { lines } from "./tools/shared";
 import { registerTools } from "./tools/index";
@@ -64,8 +65,9 @@ export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
 export function apply(ctx: Context, rawConfig?: PluginConfig): void {
   const config = resolveConfig(rawConfig);
   const store = new NovelStore(ctx, config);
+  const skillStore = new SkillStore(ctx, config.dataDir);
 
-  registerTools({ ctx, store, config, defineTool });
+  registerTools({ ctx, store, skillStore, config, defineTool });
 
   ctx.inject(["skills"], (skillCtx) => {
     void registerSkills(skillCtx).catch((error: unknown) => {
@@ -92,6 +94,8 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
           "2. `novel_context chapter=<ref>` returns the author's brief for that chapter (worldbuilding, keyword-matched lorebook entries, participating character cards, active preset, previous-chapter excerpts). Treat it as authoritative for setting, characterisation and style.",
           "3. Write the prose, then land it with `novel_chapter action=append` (`action=write` replaces a chapter).",
           "4. Record new facts as they appear: `novel_lorebook action=add` for world settings, `novel_character action=import` for SillyTavern cards, `novel_preset` for prompt presets.",
+          "5. Load a craft skill when the request is about *how* it is written rather than what happens: `novel-prose` (voice and de-AI), `novel-dialogue`, `novel-scene` (pacing), `novel-outline` (structure, plot holes, web-novel conventions). The brief from `novel_context` still outranks them.",
+          "6. Use `novel_skill` when the user brings their own writing method, or asks to share one: it imports/exports JSON skill packs into the project's `.dsh/skills/`, which the harness loads on its own.",
           "Prose must be written in the project's language (Chinese by default) and must contain only the story text — no explanations, headings or meta commentary.",
         ),
     });

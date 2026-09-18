@@ -49,6 +49,21 @@ and read the `.md` files directly when a chapter is too long to pull through a t
 - Everything the tools return is also inspectable with the plain file tools, so a
   user edit made outside the plugin shows up in the next `action=list` / `action=read`.
 
+## Writing craft
+
+This skill covers the tool loop. The craft itself lives in four sibling skills —
+load the one that matches the request instead of improvising:
+
+- `novel-prose` — voice, point of view, sentence rhythm, showing versus telling,
+  and the AI tells to strip out. Load it for any polish or rewrite.
+- `novel-dialogue` — subtext, distinguishing speakers, tags and action beats.
+- `novel-scene` — scene versus summary, goal/obstacle/turn, pacing, chapter endings.
+- `novel-outline` — outlining, subplots, setup and payoff, consistency audits, and
+  Chinese web-novel conventions (黄金三章, 爽点, 断章).
+
+The brief from `novel_context` always outranks them: it carries the author's own
+voice rules, and craft advice that contradicts it is wrong for this project.
+
 ## Continuity checklist before landing prose
 
 - Does the new text contradict a lorebook entry, a character card or an earlier chapter?

@@ -1,12 +1,13 @@
 # dsh-novelnovel · DeepSeek Harness 插件
 
 用工作区里的**普通文件**写小说：agent 直接用 `novel_*` 工具建作品、写正文、导角色卡、维护世界观词条、
-检索与导出；**续写由 harness 的模型承担**，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 /
-写作预设 / 前文摘录）组装成写作简报交给它。
+检索与导出，**续写由 harness 的模型承担**，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 /
+写作预设 / 前文摘录）组装成写作简报交给它；方法层面的东西（文风、对话、节奏、结构）由自带的技能承载，
+也可以导入你自己的。
 
 本仓库就是插件包（`dsh.bundle.patch` → `cordis.patch.yml`，向 profile 插入一行 `id: novelnovel`）。
-领域逻辑（角色卡解析、预设解析、提示词组装、词条关键词匹配、章节排序、全文搜索、PNG 卡读写、
-字数统计）集中在 `src/domain/`，与 harness 侧的存储/注册代码分离。
+领域逻辑（角色卡解析、预设解析、技能包解析、提示词组装、词条关键词匹配、章节排序、全文搜索、
+PNG 卡读写、字数统计）集中在 `src/domain/`，与 harness 侧的存储/注册代码分离。
 
 ## 安装
 
@@ -27,7 +28,7 @@ DSH_PROFILE=web npm run test:dsh # 指定其它 profile
 
 ## 兼容性
 
-已在两套环境验证（`npm run test:dsh` 35 项全过 + 真实 headless 会话）：
+已在两套环境验证（`npm run test:dsh` 40 项全过 + 真实 headless 会话）：
 
 - `@deepseek-ai/dsh@0.1.5-rc.1`（npm 上的 `latest`，其子包解析为 `0.1.5-rc.2`）
 - `@deepseek-ai/dsh@0.1.2-rc.1` CLI + `0.1.3-alpha.2` 子包（本机 source checkout 环境）
@@ -48,16 +49,67 @@ DSH_PROFILE=web npm run test:dsh # 指定其它 profile
 | `novel_character` | SillyTavern 角色卡（PNG/JSON，V1/V2/V3）导入、查看、参与开关、再导出 PNG、移除 |
 | `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词=常驻注入） |
 | `novel_preset` | 写作预设导入（SillyTavern JSON）/ 手写 / 编辑 / 激活 / 停用 |
+| `novel_skill` | 项目级写作方法技能：列出 / 导入技能包（JSON）/ 导出分享 / 删除 |
 | `novel_context` | **写作前必调**：组装本次的写作简报（系统提示词 + 指令块 + 注入清单 + 参与角色） |
 | `novel_export` | 整书导出 Markdown / TXT，或全量备份 JSON |
 
-另外自带：
+另外自带 6 个技能，agent 按需加载（`/novel-prose` 之类的手势也能直接触发）：
 
-- 技能 `novel-writing`（写作流程与连续性检查）、`novel-cards`（角色卡 / 预设的导入语义与宏规则），
-  agent 按需加载，`/novel-writing` 之类的手势也能直接触发。
-- 斜杠命令 `/novel`：直接打印当前作品状态（`/novel list` 列出全部，`/novel <作品>` 切换当前作品），
-  不经过模型。
-- 一小段系统提示词（order 4500），说明这个工作区里的小说该怎么写。
+| 技能 | 管什么 |
+|---|---|
+| `novel-writing` | 工具流程与连续性检查（先读简报、写正文、落盘、记设定） |
+| `novel-cards` | 角色卡 / 预设的导入语义与宏规则 |
+| `novel-prose` | 文风与叙述：视角一致性、叙事距离、句式节奏、去 AI 味 |
+| `novel-dialogue` | 对话：潜台词、说话人辨识度、标签与动作拍、避免翻译腔 |
+| `novel-scene` | 场景与节奏：场景 vs 概述、目标/阻碍/转折、章末钩子 |
+| `novel-outline` | 结构与大纲、伏笔回收、通读一致性审计、中文网文套路 |
+
+技能是**按需加载**的：模型平时只看得到每个技能的名字和一句描述，判断相关了才把正文拉进上下文。
+所以这些方法平时不占上下文，也不会和你的写作预设打架——需要的时候它们才出现。
+
+## 装你自己的写作方法
+
+项目根的 `.dsh/skills/` 是 harness 自己的技能目录：它会被自动扫描、改动实时生效，而且**优先级高于
+插件内置技能**（项目 rank 100/200，插件 rank 250）——所以同名时生效的是你那一份。
+
+你可以直接往里放 `SKILL.md`，也可以让 agent 用 `novel_skill` 导入一个技能包：
+
+```jsonc
+// 技能包：可以含多个技能；也可以去掉 skills，把单个技能写在顶层
+{
+  "name": "我的爽文写法",        // 包名，给人看的，可含中文
+  "author": "you",
+  "version": "1.0.0",
+  "skills": [
+    {
+      "name": "fast-payoff",    // 必须是 kebab-case，其它形式 harness 会拒绝
+      "description": "Move the payoff closer to the setup.",  // 模型唯一能看到的字段，写成路由判据
+      "whenToUse": "爽点 / 铺垫太长 / 节奏太慢",                // 可选，补充触发场景（中文触发词要留在这里）
+      "content": "# 爽点前移\n\n正文，Markdown。"              // 技能正文
+    }
+  ]
+}
+```
+
+```text
+novel_skill action=import path=my-pack.json          落到 .dsh/skills/，harness 实时收录
+novel_skill action=list                              现在装了哪些、哪些覆盖了内置技能
+novel_skill action=export name=fast-payoff           导出成包，可以分享给别人
+novel_skill action=remove name=fast-payoff confirm=true
+```
+
+导入的技能和你手写的技能走**完全相同的加载路径**——插件只负责摆文件，加载是 harness 自己的事，
+所以插件里没有第二套技能机制。`novel_skill` 也只删自己导入的（按 `.novelnovel-skill.json` 标记识别），
+手写的技能它一律不覆盖、不删除。
+
+需要知道的一件事：harness 取的项目根是「最近的含 `.git` 的祖先目录，没有就用当前工作目录」。如果会话
+开在仓库的子目录里，技能该放的地方就在工作区之外了——这时 `novel_skill` 会**拒绝并说明原因**，
+而不是写到一个不会被扫描的位置。
+
+斜杠命令 `/novel`：直接打印当前作品状态（`/novel list` 列出全部，`/novel <作品>` 切换当前作品），
+不经过模型。
+
+一小段系统提示词（order 4500），说明这个工作区里的小说该怎么写。
 
 典型流程（agent 视角）：
 
@@ -101,10 +153,17 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
     characters/<id>.json               角色卡（rawData 无损保留）
     characters/<id>.<ext>              原始头像（扩展名与真实媒体类型一致）
     exports/                            导出结果
+  skillpacks/                           novel_skill 导出的技能包
+
+<项目根>/.dsh/skills/                   项目级技能（harness 自己扫描，含 novel_skill 导入的）
+  <技能名>/SKILL.md
+  <技能名>/.novelnovel-skill.json       导入标记（手写的技能没有它）
 ```
 
 正文独立成文件是有意的：长篇小说用 `read`/`write` 工具直接改正文比走工具更顺手，
 而 `novel_chapter action=list` 会重新读文件统计字数，所以绕过插件直接改文件也不会失同步。
+
+技能不放在数据目录里，因为它是整个工作区的写作方法，不属于某部作品——见「装你自己的写作方法」。
 
 ## 设计说明
 
@@ -127,7 +186,14 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
   的包解析路径就能通过 `tsc`；运行时行为由真实 harness 与端到端验证保证。
 - **技能注册**：用 `ctx.skills.register` 运行时注册（rank 250），而不是去改 `skill-filesystem`
   的 `customSkillDirs`——后者是别的插件行的 config，覆盖它要重述 dsh-base 的整份配置（patch 是整行替换），
-  极易随上游变化失效。副作用是项目级技能（rank 100/200）仍可覆盖同名插件技能。
+  极易随上游变化失效。副作用是项目级技能（rank 100/200）天然覆盖同名插件技能，正好成了
+  「装你自己的写作方法」那条路径。
+- **技能写在 `<dataDir>` 之外**：技能属于整个工作区，不属于某部作品，所以落在项目根的 `.dsh/skills/`
+  （harness 自己的目录）。项目根按 harness 的口径取「最近的含 `.git` 的祖先目录，没有则用工作目录」；
+  会话开在仓库子目录里时项目根在工作区之外，此时 `novel_skill` **拒绝并说明原因**，而不是写到一个
+  不会被扫描的地方——「工具报成功、技能却不生效」是最难查的一类问题。这是插件唯一往数据目录之外
+  写文件的地方，范围由 `ctx.fs.contains` 收紧；导入的技能文件与手写技能走同一条 harness 加载路径，
+  插件只摆文件，不维护第二套机制。
 - **破坏性操作**：删除作品 / 章节 / 角色卡都需要 `confirm=true`，插件会拒绝未确认的调用，
   提示先与用户确认。
 
@@ -136,15 +202,16 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 ```bash
 npm run build       # esbuild 打包到 lib/
 npm run typecheck   # tsc -p .（严格模式，零错误）
-npm test            # 4 个纯逻辑单测（卡解析 / 预设+提示词 / 检索 / 排序）
+npm test            # 5 个纯逻辑单测（卡解析 / 预设+提示词 / 检索 / 排序 / 技能包）
 npm run test:dsh    # 端到端验证（需要已安装的 profile）
 ```
 
 `npm run test:dsh` 会拉起真实 harness 服务（SystemPrompt + ToolRuntime + LocalFileSystem +
 SkillRegistry + observation policy）并驱动全部工具：作品/章节/词条/角色卡（含 PNG 双写回读）/预设/
-简报组装/关键词注入命中与未命中/检索/导出/技能注册/命令处理器/配置校验/工作区边界与损坏文件容错/
-观察记录归属/卸载清理/系统提示词段，共 35 项检查，不调用模型。`npm test` 是它的快速补充：4 个纯逻辑单测直接
-测 `src/domain/` 里的解析与组装函数。
+简报组装/关键词注入命中与未命中/检索/导出/技能注册（按 `skills/` 里的 SKILL.md 逐个核对）/项目级技能
+（技能包导入→列出→导出→再导入→删除，含手写技能不被覆盖、校验失败不写一半）/命令处理器/配置校验/
+工作区边界与损坏文件容错/观察记录归属/卸载清理/系统提示词段，共 40 项检查，不调用模型。
+`npm test` 是它的快速补充：5 个纯逻辑单测直接测 `src/domain/` 里的解析与组装函数。
 
 `tests/perf-probe.mjs` 是性能探针（在 profile 目录里跑）：铺 3 部 × 200 章，
 打印每个工具调用的耗时与 `ctx.fs` 调用次数。解析作品引用只读元数据、统计字数才读正文，
