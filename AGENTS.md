@@ -7,6 +7,10 @@ agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出
 写作方法由技能承载：6 个技能随包注册（rank 250），用户自己的方法用 `novel_skill` 导入到项目根的
 `.dsh/skills/`（rank 100，会覆盖同名内置技能）——那是唯一落在 `<dataDir>` 之外的写入。
 
+MIT 许可（`LICENSE`）。分发走 `npm pack` 的 tarball（`prepack` 自动构建）；`package.json` 已处于
+可发布状态（无 `private`，`files`/元信息齐全），但**尚未发到 npm**——README 里 npm 那段是按
+"未发布"写的，真发出去之后要同步改。
+
 ## 命令
 
 ```bash
@@ -138,7 +142,11 @@ node tests/perf-probe.mjs           # 性能探针（在 profile 目录里跑，
   （仅支持 `{{#if}}/{{else}}/{{trim}}/{{var}}` 子集）替换默认设定区块；`story_string` 的 `system`
   变量映射本项目"写作要求"，lorebook 统一放 `wiBefore`。
 - **安装与调试**：改完 `src/` 必须 `npm run build`（`lib/` 不入库，profile 加载的是产物）；
-  `link:` 安装后改动只需重建 + 重开 dsh 会话，tarball 安装则要重新 `npm pack` + `dsh plugin add`。
+  `link:` 安装后改动只需重建 + 重开 dsh 会话，tarball 安装则要重新 `npm pack` + `dsh plugin add`
+  ——`prepack` 挂的就是 `npm run build`，所以 `npm pack` 出来的一定带 `lib/`，不必先手动构建。
+  **装进哪个 profile 有讲究**：只有 `web`/`headless`/`sdk`/`sdk-minimal`/`acp` 这五个名字会从自带
+  模板自动初始化，其他名字只得到 `dsh-base` 一个 bundle——而 base 只是内核（无 Host、无 HTTP、
+  无 runner），没有可交互面；`desktop` 被 CLI 保留，boot 与插件管理请求都会被拒。
   插件的观测口径（工具、技能、命令）都以 `npm run test:dsh` 为准。
 
 ## 参考

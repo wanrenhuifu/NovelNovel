@@ -1,6 +1,5 @@
 {
   "name": "dsh-novelnovel",
-  "private": true,
   "version": "0.1.0",
   "description": "NovelNovel — DeepSeek Harness 插件：novel_* 工具、写作技能与 /novel 命令，用工作区文件写小说（章节/角色卡/世界观词条/写作预设/上下文组装/导出）",
   "type": "module",
@@ -17,11 +16,38 @@
     "README.md"
   ],
   "license": "MIT",
+  "author": "wanrenhuifu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanrenhuifu/NovelNovel.git"
+  },
+  "homepage": "https://github.com/wanrenhuifu/NovelNovel#readme",
+  "bugs": {
+    "url": "https://github.com/wanrenhuifu/NovelNovel/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "novel",
+    "novel-writing",
+    "webnovel",
+    "fiction",
+    "creative-writing",
+    "chinese-novel",
+    "sillytavern",
+    "character-card"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc -p .",
     "test": "node scripts/test-card-import.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs",
-    "test:dsh": "node scripts/verify-dsh.mjs"
+    "test:dsh": "node scripts/verify-dsh.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test && npm run typecheck"
   },
   "dsh": {
     "bundle": {

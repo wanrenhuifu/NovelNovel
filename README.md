@@ -11,20 +11,59 @@ PNG 卡读写、字数统计）集中在 `src/domain/`，与 harness 侧的存�
 
 ## 安装
 
+前置：`dsh` CLI 与 `pnpm` 都在 PATH 上——`dsh plugin` 是把参数转发给 profile 目录里的 pnpm。
+
+### 装来用（tarball，不依赖工作树）
+
 ```bash
+git clone https://github.com/wanrenhuifu/NovelNovel.git && cd NovelNovel
 npm install
-npm run build                    # 构建插件产物 lib/（不入库，改了 src/ 必须重建）
-
-# 装进一个 dsh profile（不存在会自动初始化）
-dsh plugin --profile novelnovel add .
-
-# 验证：在真实 harness 服务上跑通全部工具（不调用模型）
-npm run test:dsh                 # 默认 profile: novelnovel
-DSH_PROFILE=web npm run test:dsh # 指定其它 profile
+npm pack                                  # prepack 会自动构建出 lib/
+dsh plugin --profile web add ./dsh-novelnovel-0.1.0.tgz
+dsh web
 ```
 
-想装到已有的 `web` profile，把 profile 名换成 `web` 即可。
-分发时用 `npm pack` 产出的 tarball 安装：插件会被复制进 profile 的 `node_modules`，不依赖本仓库工作树。
+### 装来改（源码 link）
+
+```bash
+npm install
+npm run build
+dsh plugin --profile web add .            # 装成 link，指向这个工作树
+```
+
+改完 `src/` 之后要 `npm run build` 再**重开 dsh 会话**——profile 加载的是构建产物，不是源码。
+
+### npm
+
+还没发布到 npm。发布之后会是 `dsh plugin --profile web add dsh-novelnovel`，装的是预构建产物，
+不需要任何构建授权。
+
+### 装进哪个 profile
+
+| profile | 用途 |
+|---|---|
+| `web` | 浏览器界面，交互式写作 |
+| `headless` | 一次性任务：`dsh --profile headless "给《长夜将至》写第三章"` |
+
+⚠️ 只有 `web` / `headless` / `sdk` / `sdk-minimal` / `acp` 这五个名字会从自带模板自动初始化。
+**自己起别的名字只会得到 `dsh-base` 一个 bundle，而 base 只是内核**——没有 Host、没有 HTTP、
+没有一次性 runner，装上也用不了。另外 `desktop` 这个名字被 CLI 保留，会直接拒绝 boot 与插件管理请求。
+
+### 验证装上了
+
+```bash
+dsh --profile web --dump-config | grep -i novelnovel   # 应能看到 # == dsh-novelnovel 那一层
+```
+
+### 不支持从 git 直接安装
+
+`dsh plugin add github:wanrenhuifu/NovelNovel` 装不起来：git 安装拉的是源码而不是构建产物，
+本包没有 `prepare` 脚本，到手没有 `lib/`，加载会失败。请用上面的 tarball 路径。
+
+### 从哪个目录启动
+
+dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那个目录>/.novelnovel/`，项目级技能落在
+「最近的含 `.git` 的祖先目录」的 `.dsh/skills/`。所以先 `cd` 到你的小说目录再启动。
 
 ## 兼容性
 
@@ -37,6 +76,10 @@ DSH_PROFILE=web npm run test:dsh # 指定其它 profile
 （保证与运行中的 harness 同模块实例），不在依赖层面锁版本。`src/contract.ts` 镜像的 API 面已在
 `0.1.3-alpha.2` 与 `0.1.5-rc.2` 之间逐项比对，无签名差异——升级 harness 后重跑一次
 `npm run test:dsh` 即可确认。
+
+这一点与生态里多数插件的做法不同（它们写 `>=` 或 caret 区间，代价是 harness 一升级就可能装不上），
+是本仓库有意的取舍：harness 还处在 developer preview，锁区间只会把上游的破坏性变更变成安装期的报错，
+而真正的兼容性由 `contract.ts` 的逐项比对和端到端验证保证。
 
 ## 用法
 
@@ -203,7 +246,7 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 npm run build       # esbuild 打包到 lib/
 npm run typecheck   # tsc -p .（严格模式，零错误）
 npm test            # 5 个纯逻辑单测（卡解析 / 预设+提示词 / 检索 / 排序 / 技能包）
-npm run test:dsh    # 端到端验证（需要已安装的 profile）
+npm run test:dsh    # 端到端验证（需要已装好插件的 profile，默认 novelnovel，可用 DSH_PROFILE 覆盖）
 ```
 
 `npm run test:dsh` 会拉起真实 harness 服务（SystemPrompt + ToolRuntime + LocalFileSystem +
