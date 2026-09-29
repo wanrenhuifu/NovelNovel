@@ -92,7 +92,8 @@ export function registerCharacterTool({ ctx, store, defineTool }: ToolDeps): voi
             action: args.action,
             summary: lines(
               `Imported 「${character.name}」 [${character.id}] as a ${character.specVersion} card.`,
-              `  avatar: ${character.avatar ? "stored" : "none"}`,
+              `  avatar: ${character.avatar ? "stored" : "none"}` +
+                (result.avatarNote ? ` — ${result.avatarNote}` : ""),
               `  card world book entries merged into project lorebook: ${result.mergedLoreEntries}` +
                 (result.skippedLoreEntries > 0
                   ? ` (${result.skippedLoreEntries} duplicates skipped)`
@@ -122,7 +123,9 @@ export function registerCharacterTool({ ctx, store, defineTool }: ToolDeps): voi
             action: args.action,
             summary: lines(
               `「${card.name}」 [${card.id}] · ${card.specVersion} card · ${card.active ? "participating" : "not participating"}`,
-              `creator: ${card.creator || "(unknown)"} · card world book entries: ${card.lorebookCount}`,
+              `creator: ${card.creator || "(unknown)"} · entries in the card's world book: ${card.lorebookEntriesInCard}`,
+              "That count is what the card shipped, not what got merged into this project's lorebook — " +
+                "empty entries are dropped on import and duplicates already present are skipped.",
               "Fields are shown as stored: {{char}} / <BOT> resolve to this card's name and {{user}} / <USER> to the protagonist (default 主角) when novel_context assembles the brief.",
               card.description.trim() ? `\ndescription:\n${card.description.trim()}` : null,
               card.personality.trim() ? `\npersonality:\n${card.personality.trim()}` : null,

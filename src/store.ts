@@ -13,7 +13,7 @@ import { computeReorder } from "./domain/reorder";
 import { searchChapters, type SearchMatch } from "./domain/search";
 import { countWords, uid } from "./domain/utils";
 import type { Context, ToolRunContext } from "./contract";
-import { FsOps, type FsSession } from "./fsx";
+import { FsOps, withStaleRetry, type FsSession, type VersionBasis } from "./fsx";
 import {
   WORKSPACE_VERSION,
   type Chapter,
@@ -31,6 +31,10 @@ export interface NovelConfig {
   defaultPrevChapterCount: number;
   defaultPrevChapterChars: number;
   defaultRecentChars: number;
+  /** 简报一次最多带多少章前文 */
+  maxPrevChapterCount: number;
+  /** 单章最多摘多少字 */
+  maxPrevChapterChars: number;
 }
 
 export interface ProjectSummary {
@@ -75,6 +79,8 @@ export interface ImportedCharacterResult {
   mergedLoreEntries: number;
   /** 因与现有词条重复而跳过的数量 */
   skippedLoreEntries: number;
+  /** 头像没能取到时说明原因（例如卡里存的是外链 URL） */
+  avatarNote?: string;
 }
 
 export interface ExportResult {
@@ -140,6 +146,25 @@ export class NovelStore {
     return this.ops.readText(path, session);
   }
 
+  /**
+   * 读 JSON 并带上 CAS 基准。所有「读-改-写」都必须走这里：
+   * 先读后改的窗口内被别处改过时，写入必须失败而不是静默覆盖。
+   */
+  private async readJsonVersioned<T>(
+    path: string,
+    session: FsSession,
+  ): Promise<{ value: T | null; basis: VersionBasis }> {
+    const read = await this.ops.readTextVersioned(path, session);
+    if (read === null) return { value: null, basis: { existed: false } };
+    const basis: VersionBasis = { existed: true, version: read.version };
+    try {
+      // 数据文件是给人手改的（Notepad 等编辑器会写 BOM），解析前先去掉
+      return { value: JSON.parse(read.text.replace(/^\uFEFF/, "")) as T, basis };
+    } catch {
+      throw new Error(`file is not valid JSON: ${path}`);
+    }
+  }
+
   // ── 路径 ──────────────────────────────────────────────────────────────
 
   private root(): string {
@@ -171,12 +196,16 @@ export class NovelStore {
     return `${this.projectDir(id)}/presets.json`;
   }
 
+  private chapterDir(id: string): string {
+    return `${this.projectDir(id)}/chapters`;
+  }
+
   private chapterIndexFile(id: string): string {
-    return `${this.projectDir(id)}/chapters/index.json`;
+    return `${this.chapterDir(id)}/index.json`;
   }
 
   private chapterFile(id: string, chapterId: string): string {
-    return `${this.projectDir(id)}/chapters/${chapterId}.md`;
+    return `${this.chapterDir(id)}/${chapterId}.md`;
   }
 
   private charactersDir(id: string): string {
@@ -205,29 +234,43 @@ export class NovelStore {
    */
   private async readWorkspace(
     session: FsSession,
-  ): Promise<{ file: WorkspaceFile; error?: string }> {
+  ): Promise<{ file: WorkspaceFile; basis: VersionBasis; error?: string }> {
     try {
-      const file = await this.ops.readJson<WorkspaceFile>(
+      const { value, basis } = await this.readJsonVersioned<WorkspaceFile>(
         `${this.root()}/workspace.json`,
         session,
       );
-      return { file: file ?? { version: WORKSPACE_VERSION, activeProject: null } };
+      return {
+        file: value ?? { version: WORKSPACE_VERSION, activeProject: null },
+        basis,
+      };
     } catch (error: unknown) {
       return {
         file: { version: WORKSPACE_VERSION, activeProject: null },
+        basis: { existed: false },
         error: (error as Error).message,
       };
     }
   }
 
-  private async writeWorkspace(session: FsSession, file: WorkspaceFile): Promise<void> {
-    await this.ops.writeJson(`${this.root()}/workspace.json`, file, session);
+  private async writeWorkspace(
+    session: FsSession,
+    file: WorkspaceFile,
+    basis: VersionBasis,
+  ): Promise<void> {
+    await this.ops.writeJson(`${this.root()}/workspace.json`, file, session, basis);
   }
 
+  /**
+   * 切换当前作品。CAS 冲突会重试整个「读-改-写」——
+   * 并发切换只是互相覆盖指针，重读一次就能收敛，不值得报错打断用户。
+   */
   async setActiveProject(session: FsSession, projectId: string): Promise<void> {
-    const { file } = await this.readWorkspace(session);
-    file.activeProject = projectId;
-    await this.writeWorkspace(session, file);
+    await withStaleRetry(async () => {
+      const { file, basis } = await this.readWorkspace(session);
+      file.activeProject = projectId;
+      await this.writeWorkspace(session, file, basis);
+    });
   }
 
   // ── 作品 ──────────────────────────────────────────────────────────────
@@ -237,11 +280,21 @@ export class NovelStore {
    * 单个作品目录读不出来（project.json 损坏、被外部改成非 JSON 等）时跳过并记录，
    * 不让一个坏目录把整个插件的入口都堵死——否则 list / 解析当前作品全都会失败。
    * `read` 里抛错同样算作该目录不可读。
+   *
+   * **目录名就是作品 id**（所有读写路径都走 projectDir(id)）。project.json 里的
+   * `id` 字段只是当初创建时抄的一份，用户复制/改名目录后就会与目录名分叉——
+   * 那时以目录名为准，并把不一致记进 unreadable 让 `action=list` 点名，
+   * 而不是让「列表显示 A、写入落在 B」这种事发生。
    */
   private async scanProjectDirs<T>(
     session: FsSession,
     read: (project: NovelProject, dir: string, active: string | null) => Promise<T>,
-  ): Promise<{ items: T[]; unreadable: UnreadableProject[]; active: string | null; workspaceError?: string }> {
+  ): Promise<{
+    items: T[];
+    unreadable: UnreadableProject[];
+    active: string | null;
+    workspaceError?: string;
+  }> {
     const workspace = await this.readWorkspace(session);
     const active = workspace.file.activeProject;
     const entries = await this.ops.listDir(this.projectsRoot(), session);
@@ -255,7 +308,13 @@ export class NovelStore {
           session,
         );
         if (!project) continue;
-        items.push(await read(project, entry.name, active));
+        if (typeof project.id === "string" && project.id !== entry.name) {
+          throw new Error(
+            `project.json id "${project.id}" does not match its directory name "${entry.name}". ` +
+              "The directory name is authoritative — set project.id to it (or remove the field) to use this project",
+          );
+        }
+        items.push(await read({ ...project, id: entry.name }, entry.name, active));
       } catch (error: unknown) {
         unreadable.push({ id: entry.name, error: (error as Error).message });
       }
@@ -448,25 +507,61 @@ export class NovelStore {
     // 必须先确认这是已解析出的作品目录，避免把任意目录名删掉
     await this.readProject(session, projectId);
     await this.ops.removeDir(this.projectDir(projectId), session);
-    const { file } = await this.readWorkspace(session);
-    if (file.activeProject === projectId) {
+    await withStaleRetry(async () => {
+      const { file, basis } = await this.readWorkspace(session);
+      if (file.activeProject !== projectId) return;
       file.activeProject = null;
-      await this.writeWorkspace(session, file);
-    }
+      await this.writeWorkspace(session, file, basis);
+    });
   }
 
   // ── 世界观词条 ────────────────────────────────────────────────────────
 
+  /**
+   * 世界书词条的**宽松**读：文件损坏时退化为空数组并记下原因，
+   * 让 `novel_context` / `/novel` / 导出仍然可用——一个坏文件不该把整个简报堵死。
+   * 决定写入的路径必须用 readLorebookStrict：静默当空值会把坏文件覆盖掉。
+   */
+  async readLorebookDiagnosed(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ entries: LoreEntry[]; error?: string }> {
+    const read = await this.ops.readJsonOrDiagnose<LoreEntry[]>(
+      this.lorebookFile(projectId),
+      session,
+    );
+    if (read.error !== undefined) return { entries: [], error: read.error };
+    return { entries: read.value ?? [] };
+  }
+
   async readLorebook(session: FsSession, projectId: string): Promise<LoreEntry[]> {
-    return (await this.ops.readJson<LoreEntry[]>(this.lorebookFile(projectId), session)) ?? [];
+    return (await this.readLorebookDiagnosed(session, projectId)).entries;
+  }
+
+  private async readLorebookStrict(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ entries: LoreEntry[]; basis: VersionBasis }> {
+    const { value, basis } = await this.readJsonVersioned<LoreEntry[]>(
+      this.lorebookFile(projectId),
+      session,
+    );
+    if (value === null && basis.existed) {
+      throw new Error(
+        `cannot update the lorebook: ${this.lorebookFile(projectId)} is not valid JSON. ` +
+          "Fix it (or delete the file to start from an empty lorebook), then retry.",
+      );
+    }
+    return { entries: value ?? [], basis };
   }
 
   private async writeLorebook(
     session: FsSession,
     projectId: string,
     entries: LoreEntry[],
+    basis: VersionBasis,
   ): Promise<void> {
-    await this.ops.writeJson(this.lorebookFile(projectId), entries, session);
+    await this.ops.writeJson(this.lorebookFile(projectId), entries, session, basis);
   }
 
   async addLoreEntries(
@@ -474,22 +569,24 @@ export class NovelStore {
     projectId: string,
     entries: Omit<LoreEntry, "id">[],
   ): Promise<{ added: number; skipped: number; total: number }> {
-    const current = await this.readLorebook(session, projectId);
-    const seen = new Set(current.map((e) => `${e.name}\u0000${e.content.trim()}`));
-    let added = 0;
-    let skipped = 0;
-    for (const entry of entries) {
-      const key = `${entry.name}\u0000${entry.content.trim()}`;
-      if (seen.has(key)) {
-        skipped++;
-        continue;
+    return withStaleRetry(async () => {
+      const { entries: current, basis } = await this.readLorebookStrict(session, projectId);
+      const seen = new Set(current.map((e) => `${e.name}\u0000${e.content.trim()}`));
+      let added = 0;
+      let skipped = 0;
+      for (const entry of entries) {
+        const key = `${entry.name}\u0000${entry.content.trim()}`;
+        if (seen.has(key)) {
+          skipped++;
+          continue;
+        }
+        seen.add(key);
+        current.push({ ...entry, id: uid() });
+        added++;
       }
-      seen.add(key);
-      current.push({ ...entry, id: uid() });
-      added++;
-    }
-    if (added > 0) await this.writeLorebook(session, projectId, current);
-    return { added, skipped, total: current.length };
+      if (added > 0) await this.writeLorebook(session, projectId, current, basis);
+      return { added, skipped, total: current.length };
+    });
   }
 
   async updateLoreEntry(
@@ -498,32 +595,43 @@ export class NovelStore {
     ref: string,
     patch: { name?: string; keys?: string; content?: string; enabled?: boolean; toggle?: boolean },
   ): Promise<LoreEntry> {
-    const entries = await this.readLorebook(session, projectId);
-    const entry = this.findLoreEntry(entries, ref, projectId);
-    if (patch.name !== undefined) entry.name = patch.name;
-    if (patch.keys !== undefined) entry.keys = patch.keys;
-    if (patch.content !== undefined) entry.content = patch.content;
-    if (patch.enabled !== undefined) entry.enabled = patch.enabled;
-    // toggle 在解析出唯一词条之后再翻转，避免部分匹配时读到错误的前值
-    if (patch.toggle === true) entry.enabled = !entry.enabled;
-    await this.writeLorebook(session, projectId, entries);
-    return entry;
+    // add 侧会 trim name/keys/content；update 侧同样处理，否则 " 旧伤 " / "" 会落盘，
+    // 之后精确与唯一部分匹配全都失效（只能靠 id 找）。
+    if (patch.name !== undefined && !patch.name.trim()) {
+      throw new Error("lorebook entry name cannot be empty");
+    }
+    return withStaleRetry(async () => {
+      const { entries, basis } = await this.readLorebookStrict(session, projectId);
+      const entry = this.findLoreEntry(entries, ref, projectId);
+      if (patch.name !== undefined) entry.name = patch.name.trim();
+      if (patch.keys !== undefined) entry.keys = patch.keys.trim();
+      if (patch.content !== undefined) entry.content = patch.content;
+      if (patch.enabled !== undefined) entry.enabled = patch.enabled;
+      // toggle 在解析出唯一词条之后再翻转，避免部分匹配时读到错误的前值
+      if (patch.toggle === true) entry.enabled = !entry.enabled;
+      await this.writeLorebook(session, projectId, entries, basis);
+      return entry;
+    });
   }
 
   async removeLoreEntry(session: FsSession, projectId: string, ref: string): Promise<LoreEntry> {
-    const entries = await this.readLorebook(session, projectId);
-    const entry = this.findLoreEntry(entries, ref, projectId);
-    await this.writeLorebook(
-      session,
-      projectId,
-      entries.filter((e) => e.id !== entry.id),
-    );
-    return entry;
+    return withStaleRetry(async () => {
+      const { entries, basis } = await this.readLorebookStrict(session, projectId);
+      const entry = this.findLoreEntry(entries, ref, projectId);
+      await this.writeLorebook(
+        session,
+        projectId,
+        entries.filter((e) => e.id !== entry.id),
+        basis,
+      );
+      return entry;
+    });
   }
 
   /**
    * 解析词条引用：id / 名称精确 / 名称部分匹配。
-   * 与章节一样给出候选清单，便于模型自我纠正。
+   * 候选清单截断为前 20 条——几千个词条时把它整份塞进模型可见的错误文本，
+   * 一次拼错就吃掉大量上下文。
    */
   private findLoreEntry(entries: LoreEntry[], ref: string, projectId: string): LoreEntry {
     const wanted = ref.trim();
@@ -533,30 +641,76 @@ export class NovelStore {
     const partial = entries.filter((e) => e.name.toLowerCase().includes(lower));
     if (partial.length === 1) return partial[0];
     if (entries.length === 0) throw new Error(`project "${projectId}" has no lorebook entries yet`);
+    const names = entries.map((e) => e.name);
+    const shown = names.slice(0, 20).join(", ");
+    const more = names.length > 20 ? ` … and ${names.length - 20} more` : "";
     throw new Error(
       partial.length > 1
         ? `lorebook entry "${ref}" is ambiguous: ${partial.map((e) => e.name).join(", ")}`
-        : `lorebook entry "${ref}" not found. Available: ${entries.map((e) => e.name).join(", ")}`,
+        : `lorebook entry "${ref}" not found. Available: ${shown}${more}`,
     );
   }
 
   // ── 写作预设 ──────────────────────────────────────────────────────────
 
-  async readPresets(session: FsSession, projectId: string): Promise<PresetFile> {
-    return (
-      (await this.ops.readJson<PresetFile>(this.presetsFile(projectId), session)) ?? {
-        activePresetId: null,
-        presets: [],
-      }
+  /**
+   * 写作预设的宽松读：文件坏了退化为空并记原因（简报要能继续组装）。
+   * 决定写入的路径用 readPresetsStrict。
+   */
+  async readPresetsDiagnosed(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ file: PresetFile; error?: string }> {
+    const read = await this.ops.readJsonOrDiagnose<PresetFile>(
+      this.presetsFile(projectId),
+      session,
     );
+    if (read.error !== undefined) {
+      return { file: { activePresetId: null, presets: [] }, error: read.error };
+    }
+    return { file: read.value ?? { activePresetId: null, presets: [] } };
+  }
+
+  async readPresets(session: FsSession, projectId: string): Promise<PresetFile> {
+    return (await this.readPresetsDiagnosed(session, projectId)).file;
+  }
+
+  private async readPresetsStrict(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ file: PresetFile; basis: VersionBasis }> {
+    const { value, basis } = await this.readJsonVersioned<PresetFile>(
+      this.presetsFile(projectId),
+      session,
+    );
+    if (value === null && basis.existed) {
+      throw new Error(
+        `cannot change presets: ${this.presetsFile(projectId)} is not valid JSON. ` +
+          "Fix it (or delete the file to start from no presets), then retry.",
+      );
+    }
+    return { file: value ?? { activePresetId: null, presets: [] }, basis };
   }
 
   private async writePresets(
     session: FsSession,
     projectId: string,
     file: PresetFile,
+    basis: VersionBasis,
   ): Promise<void> {
-    await this.ops.writeJson(this.presetsFile(projectId), file, session);
+    await this.ops.writeJson(this.presetsFile(projectId), file, session, basis);
+  }
+
+  /**
+   * 按新的 kind 重算激活指针，返回「现在还生效吗」。
+   *
+   * 同名重导入如果换了 kind（context ⇄ system ⇄ instruct），原 id 虽然还在，
+   * `activePreset()` 却会对 instruct 返回 null——简报静默退回内置默认提示词，
+   * 而返回信息说「stays active」。所以替换后必须重算并如实报告。
+   */
+  private reconcileActivePreset(file: PresetFile): void {
+    const active = file.presets.find((p) => p.id === file.activePresetId);
+    if (active && active.kind === "instruct") file.activePresetId = null;
   }
 
   /** 从 JSON 文本导入预设（识别裸预设与合订信封，见 presetImport.ts） */
@@ -566,23 +720,28 @@ export class NovelStore {
     text: string,
   ): Promise<{ preset: Preset; note?: string; activated: boolean; replacedActive: boolean }> {
     const { preset, note } = parsePresetFile(text);
-    const file = await this.readPresets(session, projectId);
-    const existing = file.presets.findIndex((p) => p.name === preset.name);
-    // 同名重导入是替换：必须沿用原 id，否则 activePresetId 会指向已删除的 id，
-    // 表现为「列表里显示有激活项，但组装简报时静默退回内置默认提示词」。
-    const replacedId = existing >= 0 ? file.presets[existing].id : null;
-    const stored: Preset = { ...preset, id: replacedId ?? uid(), createdAt: Date.now() };
-    if (existing >= 0) file.presets[existing] = stored;
-    else file.presets.push(stored);
-    let activated = false;
-    // 首个可用预设自动激活：instruct 只存档，不参与提示词组装
-    if (stored.kind !== "instruct" && file.activePresetId === null) {
-      file.activePresetId = stored.id;
-      activated = true;
-    }
-    const replacedActive = replacedId !== null && file.activePresetId === replacedId;
-    await this.writePresets(session, projectId, file);
-    return { preset: stored, ...(note ? { note } : {}), activated, replacedActive };
+    return withStaleRetry(async () => {
+      const { file, basis } = await this.readPresetsStrict(session, projectId);
+      const existing = file.presets.findIndex((p) => p.name === preset.name);
+      // 同名重导入是替换：必须沿用原 id，否则 activePresetId 会指向已删除的 id，
+      // 表现为「列表里显示有激活项，但组装简报时静默退回内置默认提示词」。
+      const replacedId = existing >= 0 ? file.presets[existing].id : null;
+      const stored: Preset = { ...preset, id: replacedId ?? uid(), createdAt: Date.now() };
+      if (existing >= 0) file.presets[existing] = stored;
+      else file.presets.push(stored);
+      let activated = false;
+      // 首个可用预设自动激活：instruct 只存档，不参与提示词组装
+      if (stored.kind !== "instruct" && file.activePresetId === null) {
+        file.activePresetId = stored.id;
+        activated = true;
+      }
+      // 替换可能把原来的激活项变成 instruct（或反之）：先记下原状态，重算后如实报告
+      const wasActive = replacedId !== null && file.activePresetId === replacedId;
+      this.reconcileActivePreset(file);
+      const replacedActive = wasActive && file.activePresetId === replacedId;
+      await this.writePresets(session, projectId, file, basis);
+      return { preset: stored, ...(note ? { note } : {}), activated, replacedActive };
+    });
   }
 
   async addPreset(
@@ -592,21 +751,31 @@ export class NovelStore {
   ): Promise<{ preset: Preset; activated: boolean }> {
     const name = input.name.trim();
     if (!name) throw new Error("preset name is required");
-    const file = await this.readPresets(session, projectId);
-    const preset: Preset = {
-      id: uid(),
-      name,
-      systemPrompt: input.systemPrompt ?? "",
-      storyString: input.storyString ?? "",
-      kind: input.storyString ? "context" : "system",
-      createdAt: Date.now(),
-    };
-    file.presets.push(preset);
-    // 首个预设自动激活：否则用户会以为已经生效
-    const activated = file.activePresetId === null;
-    if (activated) file.activePresetId = preset.id;
-    await this.writePresets(session, projectId, file);
-    return { preset, activated };
+    return withStaleRetry(async () => {
+      const { file, basis } = await this.readPresetsStrict(session, projectId);
+      // 同名并存会让 resolvePreset 的精确匹配永远命中第一个、第二个只能靠 id 操作，
+      // 所以这里直接拒绝，指路去用 action=update。
+      if (file.presets.some((p) => p.name === name)) {
+        throw new Error(
+          `a preset named "${name}" already exists — edit it with action=update, ` +
+            "or pick a different name",
+        );
+      }
+      const preset: Preset = {
+        id: uid(),
+        name,
+        systemPrompt: input.systemPrompt ?? "",
+        storyString: input.storyString ?? "",
+        kind: input.storyString ? "context" : "system",
+        createdAt: Date.now(),
+      };
+      file.presets.push(preset);
+      // 首个预设自动激活：否则用户会以为已经生效
+      const activated = file.activePresetId === null;
+      if (activated) file.activePresetId = preset.id;
+      await this.writePresets(session, projectId, file, basis);
+      return { preset, activated };
+    });
   }
 
   /** 解析预设引用：id / 名称精确 / 名称唯一部分匹配（与章节、角色卡的解析口径一致） */
@@ -625,12 +794,12 @@ export class NovelStore {
     if (all.length === 0) {
       throw new Error(`project "${projectId}" has no presets yet — import one first`);
     }
+    const shown = all.slice(0, 20).map((preset) => `${preset.id} (${preset.name})`);
+    const more = all.length > 20 ? ` … and ${all.length - 20} more` : "";
     throw new Error(
       partial.length > 1
         ? `preset "${ref}" is ambiguous: ${partial.map((preset) => preset.name).join(", ")}`
-        : `preset "${ref}" not found. Available: ${all
-            .map((preset) => `${preset.id} (${preset.name})`)
-            .join(", ")}`,
+        : `preset "${ref}" not found. Available: ${shown.join(", ")}${more}`,
     );
   }
 
@@ -640,14 +809,24 @@ export class NovelStore {
     presetId: string,
     patch: { name?: string; systemPrompt?: string; storyString?: string },
   ): Promise<Preset> {
-    const file = await this.readPresets(session, projectId);
-    const preset = file.presets.find((p) => p.id === presetId);
-    if (!preset) throw new Error(`preset not found: ${presetId}`);
-    if (patch.name !== undefined) preset.name = patch.name.trim() || preset.name;
-    if (patch.systemPrompt !== undefined) preset.systemPrompt = patch.systemPrompt;
-    if (patch.storyString !== undefined) preset.storyString = patch.storyString;
-    await this.writePresets(session, projectId, file);
-    return preset;
+    if (patch.name !== undefined && !patch.name.trim()) {
+      throw new Error("preset name cannot be empty");
+    }
+    return withStaleRetry(async () => {
+      const { file, basis } = await this.readPresetsStrict(session, projectId);
+      const preset = file.presets.find((p) => p.id === presetId);
+      if (!preset) throw new Error(`preset not found: ${presetId}`);
+      if (patch.name !== undefined) preset.name = patch.name.trim();
+      if (patch.systemPrompt !== undefined) preset.systemPrompt = patch.systemPrompt;
+      if (patch.storyString !== undefined) {
+        preset.storyString = patch.storyString;
+        // kind 跟着内容走：story_string 有了就是 context，否则退回 system
+        preset.kind = patch.storyString.trim() ? "context" : "system";
+      }
+      this.reconcileActivePreset(file);
+      await this.writePresets(session, projectId, file, basis);
+      return preset;
+    });
   }
 
   /**
@@ -659,33 +838,36 @@ export class NovelStore {
     projectId: string,
     presetId: string | null,
   ): Promise<PresetFile> {
-    const file = await this.readPresets(session, projectId);
-    if (presetId === null) {
-      file.activePresetId = null;
-      await this.writePresets(session, projectId, file);
+    return withStaleRetry(async () => {
+      const { file, basis } = await this.readPresetsStrict(session, projectId);
+      if (presetId !== null) {
+        const preset = file.presets.find((p) => p.id === presetId);
+        if (!preset) throw new Error(`preset not found: ${presetId}`);
+        if (preset.kind === "instruct") {
+          throw new Error(
+            `preset "${preset.name}" is an instruct preset: it only controls dialogue formatting, ` +
+              `which the harness owns, so it is archived but never applied`,
+          );
+        }
+        file.activePresetId = preset.id;
+      } else {
+        file.activePresetId = null;
+      }
+      await this.writePresets(session, projectId, file, basis);
       return file;
-    }
-    const preset = file.presets.find((p) => p.id === presetId);
-    if (!preset) throw new Error(`preset not found: ${presetId}`);
-    if (preset.kind === "instruct") {
-      throw new Error(
-        `preset "${preset.name}" is an instruct preset: it only controls dialogue formatting, ` +
-          `which the harness owns, so it is archived but never applied`,
-      );
-    }
-    file.activePresetId = preset.id;
-    await this.writePresets(session, projectId, file);
-    return file;
+    });
   }
 
   async removePreset(session: FsSession, projectId: string, presetId: string): Promise<Preset> {
-    const file = await this.readPresets(session, projectId);
-    const preset = file.presets.find((p) => p.id === presetId);
-    if (!preset) throw new Error(`preset not found: ${presetId}`);
-    file.presets = file.presets.filter((p) => p.id !== presetId);
-    if (file.activePresetId === presetId) file.activePresetId = null;
-    await this.writePresets(session, projectId, file);
-    return preset;
+    return withStaleRetry(async () => {
+      const { file, basis } = await this.readPresetsStrict(session, projectId);
+      const preset = file.presets.find((p) => p.id === presetId);
+      if (!preset) throw new Error(`preset not found: ${presetId}`);
+      file.presets = file.presets.filter((p) => p.id !== presetId);
+      if (file.activePresetId === presetId) file.activePresetId = null;
+      await this.writePresets(session, projectId, file, basis);
+      return preset;
+    });
   }
 
   /** 当前参与提示词组装的预设（instruct 不参与，未激活时为 null） */
@@ -697,11 +879,43 @@ export class NovelStore {
 
   // ── 章节 ──────────────────────────────────────────────────────────────
 
+  /** 读章节索引 + CAS 基准（改动索引的路径必须用它） */
+  private async readChapterIndexVersioned(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ index: ChapterIndex; basis: VersionBasis }> {
+    const { value, basis } = await this.readJsonVersioned<ChapterIndex>(
+      this.chapterIndexFile(projectId),
+      session,
+    );
+    return { index: value ?? { items: [] }, basis };
+  }
+
   private async readChapterIndex(session: FsSession, projectId: string): Promise<ChapterIndex> {
-    return (
-      (await this.ops.readJson<ChapterIndex>(this.chapterIndexFile(projectId), session)) ?? {
-        items: [],
-      }
+    return (await this.readChapterIndexVersioned(session, projectId)).index;
+  }
+
+  /**
+   * 索引文件缺失时的安全闸。
+   *
+   * 索引缺失被当成空索引是危险的：下一次建章会把「只含新章」的索引写回去，
+   * 全书大纲（标题/标签/顺序）一次性消失，已有的 .md 全成孤儿。
+   * 所以缺索引时先看目录里有没有正文——有就拒绝写入并给出修法。
+   */
+  private async assertIndexRecoverable(
+    session: FsSession,
+    projectId: string,
+    basis: VersionBasis,
+  ): Promise<void> {
+    if (basis.existed) return;
+    const orphans = (await this.ops.listDir(this.chapterDir(projectId), session)).filter(
+      (entry) => entry.type === "file" && entry.name.endsWith(".md"),
+    );
+    if (orphans.length === 0) return;
+    throw new Error(
+      `chapters/index.json is missing but ${orphans.length} chapter file(s) exist under ` +
+        `${this.chapterDir(projectId)} (e.g. ${orphans[0].name}). Writing now would drop the whole ` +
+        "outline. Restore chapters/index.json (or move the .md files away), then retry.",
     );
   }
 
@@ -709,8 +923,9 @@ export class NovelStore {
     session: FsSession,
     projectId: string,
     index: ChapterIndex,
+    basis: VersionBasis,
   ): Promise<void> {
-    await this.ops.writeJson(this.chapterIndexFile(projectId), index, session);
+    await this.ops.writeJson(this.chapterIndexFile(projectId), index, session, basis);
   }
 
   async listChapterMetas(session: FsSession, projectId: string): Promise<ChapterMeta[]> {
@@ -760,6 +975,26 @@ export class NovelStore {
     );
   }
 
+  /**
+   * 读章节正文 + CAS 基准。
+   * 索引里有条目但正文文件不见了时**报错**，而不是返回空串：否则后续 append 会把
+   * 「正文被外部删掉」伪装成「新建了一个空章」。
+   */
+  private async readChapterBodyVersioned(
+    session: FsSession,
+    projectId: string,
+    chapterId: string,
+  ): Promise<{ text: string; basis: VersionBasis }> {
+    const read = await this.ops.readTextVersioned(this.chapterFile(projectId, chapterId), session);
+    if (read === null) {
+      throw new Error(
+        `chapter body is missing: ${this.chapterFile(projectId, chapterId)} — the index still lists ` +
+          "this chapter. Restore the file, or delete the chapter and create it again.",
+      );
+    }
+    return { text: read.text, basis: { existed: true, version: read.version } };
+  }
+
   async readChapter(session: FsSession, projectId: string, ref: string): Promise<Chapter> {
     const meta = await this.resolveChapterId(session, projectId, ref);
     const content =
@@ -767,6 +1002,11 @@ export class NovelStore {
     return { ...meta, content, words: countWords(content) };
   }
 
+  /**
+   * 新建章节。
+   * 顺序是「先写正文、再写索引」：索引写失败只会留一个孤儿 .md（可见、可修），
+   * 反过来的话索引里会多出一个没有正文的章节（`readChapter` 立刻报错）。
+   */
   async createChapter(
     session: FsSession,
     projectId: string,
@@ -774,64 +1014,92 @@ export class NovelStore {
   ): Promise<Chapter> {
     const title = input.title.trim();
     if (!title) throw new Error("chapter title is required");
-    const index = await this.readChapterIndex(session, projectId);
-    const id = uid().replace(/-/g, "").slice(0, 10);
-    const position =
-      input.position === undefined || input.position < 1
-        ? index.items.length + 1
-        : Math.min(input.position, index.items.length + 1);
-    index.items.splice(position - 1, 0, {
-      id,
-      title,
-      tags: input.tags ?? [],
-      sortOrder: position - 1,
-      updatedAt: Date.now(),
+    return withStaleRetry(async () => {
+      const { index, basis } = await this.readChapterIndexVersioned(session, projectId);
+      await this.assertIndexRecoverable(session, projectId, basis);
+      const id = uid().replace(/-/g, "").slice(0, 10);
+      const position =
+        input.position === undefined || input.position < 1
+          ? index.items.length + 1
+          : Math.min(input.position, index.items.length + 1);
+      index.items.splice(position - 1, 0, {
+        id,
+        title,
+        tags: input.tags ?? [],
+        sortOrder: position - 1,
+        updatedAt: Date.now(),
+      });
+      index.items = index.items.map((item, i) => ({ ...item, sortOrder: i }));
+      const content = input.content ?? "";
+      await this.ops.writeText(this.chapterFile(projectId, id), content, session);
+      await this.writeChapterIndex(session, projectId, index, basis);
+      return { ...index.items[position - 1], content, words: countWords(content) };
     });
-    index.items = index.items.map((item, i) => ({ ...item, sortOrder: i }));
-    const content = input.content ?? "";
-    await this.ops.writeText(this.chapterFile(projectId, id), content, session);
-    await this.writeChapterIndex(session, projectId, index);
-    return { ...index.items[position - 1], content, words: countWords(content) };
   }
 
+  /**
+   * 改动章节元数据。索引是共享文件（并发建章/移动/改名都会撞它），
+   * 所以 CAS 冲突重试整个「读-改-写」：重读一次拿到最新顺序再套用同一处 patch。
+   */
   private async patchChapter(
     session: FsSession,
     projectId: string,
     chapterId: string,
     patch: (meta: ChapterMeta) => void,
   ): Promise<ChapterMeta> {
-    const index = await this.readChapterIndex(session, projectId);
-    const meta = index.items.find((item) => item.id === chapterId);
-    if (!meta) throw new Error(`chapter not found: ${chapterId}`);
-    patch(meta);
-    meta.updatedAt = Date.now();
-    await this.writeChapterIndex(session, projectId, index);
-    return meta;
+    return withStaleRetry(async () => {
+      const { index, basis } = await this.readChapterIndexVersioned(session, projectId);
+      const meta = index.items.find((item) => item.id === chapterId);
+      if (!meta) throw new Error(`chapter not found: ${chapterId}`);
+      patch(meta);
+      meta.updatedAt = Date.now();
+      await this.writeChapterIndex(session, projectId, index, basis);
+      return meta;
+    });
   }
 
-  /** 覆写章节正文 */
+  /** 覆写章节正文；调用方已有正文基准时传进来，避免「读-改-写」窗口被并发覆盖 */
   async writeChapterBody(
     session: FsSession,
     projectId: string,
     chapterId: string,
     content: string,
+    expected?: VersionBasis,
   ): Promise<Chapter> {
     const meta = await this.patchChapter(session, projectId, chapterId, () => {});
-    await this.ops.writeText(this.chapterFile(projectId, chapterId), content, session);
+    await this.ops.writeText(
+      this.chapterFile(projectId, chapterId),
+      content,
+      session,
+      expected,
+    );
     return { ...meta, content, words: countWords(content) };
   }
 
-  /** 追加正文（续写的落地写入口） */
+  /**
+   * 追加正文（续写的落地写入口）。
+   *
+   * 负载**不做 trim**：前导空行与 markdown 硬换行（行尾两空格）都是正文的一部分，
+   * 「追加」不应该顺手重写它们。只在需要时补一个段落分隔。
+   */
   async appendChapterBody(
     session: FsSession,
     projectId: string,
     chapterId: string,
     text: string,
   ): Promise<Chapter> {
-    const current =
-      (await this.ops.readTextOrNull(this.chapterFile(projectId, chapterId), session)) ?? "";
-    const joined = current.replace(/\s*$/, "") + (current.trim() ? "\n\n" : "") + text.trim() + "\n";
-    return this.writeChapterBody(session, projectId, chapterId, joined);
+    return withStaleRetry(async () => {
+      const { text: current, basis } = await this.readChapterBodyVersioned(
+        session,
+        projectId,
+        chapterId,
+      );
+      const joined =
+        current.length === 0
+          ? text
+          : current.replace(/\n*$/, "") + "\n\n" + text.replace(/\n*$/, "") + "\n";
+      return this.writeChapterBody(session, projectId, chapterId, joined, basis);
+    });
   }
 
   async updateChapterMeta(
@@ -865,13 +1133,25 @@ export class NovelStore {
     targetId: string,
     position: "before" | "after",
   ): Promise<ChapterMeta[]> {
-    const items = await this.listChapterMetas(session, projectId);
-    const reordered = computeReorder(items, chapterId, targetId, position);
-    if (!reordered) return items;
-    await this.writeChapterIndex(session, projectId, { items: reordered });
-    return reordered;
+    return withStaleRetry(async () => {
+      const items = await this.listChapterMetas(session, projectId);
+      const reordered = computeReorder(items, chapterId, targetId, position);
+      if (!reordered) {
+        const available = items.map((m) => `${m.title} (${m.id})`).join(", ");
+        throw new Error(
+          `cannot move chapter: "${chapterId}" → ${position} "${targetId}". Available: ${available}`,
+        );
+      }
+      const { basis } = await this.readChapterIndexVersioned(session, projectId);
+      await this.writeChapterIndex(session, projectId, { items: reordered }, basis);
+      return reordered;
+    });
   }
 
+  /**
+   * 删除章节。**先删正文、再改索引**：反过来一旦删文件失败，章节已经从书里消失、
+   * 工具却报错，模型会再删一次，而残留的 .md 永远不可见也没人清理。
+   */
   async deleteChapter(
     session: FsSession,
     projectId: string,
@@ -883,15 +1163,17 @@ export class NovelStore {
         "refusing to delete a chapter without confirm=true — confirm with the user first",
       );
     }
-    const index = await this.readChapterIndex(session, projectId);
-    const meta = index.items.find((item) => item.id === chapterId);
-    if (!meta) throw new Error(`chapter not found: ${chapterId}`);
-    index.items = index.items
-      .filter((item) => item.id !== chapterId)
-      .map((item, i) => ({ ...item, sortOrder: i }));
-    await this.writeChapterIndex(session, projectId, index);
-    await this.ops.removeFile(this.chapterFile(projectId, chapterId), session);
-    return meta;
+    return withStaleRetry(async () => {
+      const { index, basis } = await this.readChapterIndexVersioned(session, projectId);
+      const meta = index.items.find((item) => item.id === chapterId);
+      if (!meta) throw new Error(`chapter not found: ${chapterId}`);
+      index.items = index.items
+        .filter((item) => item.id !== chapterId)
+        .map((item, i) => ({ ...item, sortOrder: i }));
+      await this.ops.removeFile(this.chapterFile(projectId, chapterId), session);
+      await this.writeChapterIndex(session, projectId, index, basis);
+      return meta;
+    });
   }
 
   async search(
@@ -906,19 +1188,38 @@ export class NovelStore {
 
   // ── 角色卡 ────────────────────────────────────────────────────────────
 
-  async listCharacters(session: FsSession, projectId: string): Promise<StoredCharacter[]> {
+  /**
+   * 角色卡列表。单张卡手改坏时跳过并点名（与作品目录同一口径），
+   * 而不是让 `novel_context` / `novel_character list` 整体失效。
+   */
+  async listCharactersDiagnosed(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ characters: StoredCharacter[]; broken: { file: string; error: string }[] }> {
     const dir = this.charactersDir(projectId);
     const entries = await this.ops.listDir(dir, session);
     const characters: StoredCharacter[] = [];
+    const broken: { file: string; error: string }[] = [];
     for (const entry of entries) {
       if (entry.type !== "file" || !entry.name.endsWith(".json")) continue;
-      const character = await this.ops.readJson<StoredCharacter>(
+      const read = await this.ops.readJsonOrDiagnose<StoredCharacter>(
         `${dir}/${entry.name}`,
         session,
       );
-      if (character) characters.push(character);
+      if (read.error !== undefined) {
+        broken.push({ file: `${dir}/${entry.name}`, error: read.error });
+        continue;
+      }
+      if (read.value) characters.push(read.value);
     }
-    return characters.sort((a, b) => a.createdAt - b.createdAt);
+    return {
+      characters: characters.sort((a, b) => a.createdAt - b.createdAt),
+      broken,
+    };
+  }
+
+  async listCharacters(session: FsSession, projectId: string): Promise<StoredCharacter[]> {
+    return (await this.listCharactersDiagnosed(session, projectId)).characters;
   }
 
   async resolveCharacter(
@@ -936,12 +1237,12 @@ export class NovelStore {
     if (exact) return exact;
     const partial = characters.filter((c) => c.name.toLowerCase().includes(lower));
     if (partial.length === 1) return partial[0];
+    const shown = characters.slice(0, 20).map((c) => `${c.name} (${c.id})`);
+    const more = characters.length > 20 ? ` … and ${characters.length - 20} more` : "";
     throw new Error(
       partial.length > 1
         ? `character "${ref}" is ambiguous: ${partial.map((c) => c.name).join(", ")}`
-        : `character "${ref}" not found. Available: ${characters
-            .map((c) => `${c.name} (${c.id})`)
-            .join(", ")}`,
+        : `character "${ref}" not found. Available: ${shown.join(", ")}${more}`,
     );
   }
 
@@ -958,7 +1259,10 @@ export class NovelStore {
     const bytes = await this.ops.readBytesOrNull(filePath, session);
     if (!bytes) throw new Error(`character card not found: ${filePath}`);
     const parsed = await parseCharacterBytes(bytes, filePath, mediaTypeOf(filePath));
-    const { avatarBytes, avatarType, ...rest } = parsed.character;
+    // 落盘之前先确认世界书**能不能读**：lorebook.json 坏了的时候在这里就失败，
+    // 而不是写完卡片、头像之后再抛错，留下「报失败但卡片已 active 并参与简报」的半成品。
+    await this.readLorebookStrict(session, projectId);
+    const { avatarBytes, avatarType, avatarNote, ...rest } = parsed.character;
     const id = uid().replace(/-/g, "").slice(0, 10);
     // 头像文件按真实媒体类型命名：非 PNG 卡的头像原样存盘，扩展名不能撒谎
     const avatar = avatarBytes ? `${id}.${extensionForMediaType(avatarType)}` : null;
@@ -972,12 +1276,25 @@ export class NovelStore {
       );
     }
     await this.ops.writeJson(this.characterFile(projectId, id), character, session);
-    const lore = await this.addLoreEntries(session, projectId, parsed.loreEntries);
-    return {
-      character,
-      mergedLoreEntries: lore.added,
-      skippedLoreEntries: lore.skipped,
-    };
+    try {
+      const lore = await this.addLoreEntries(session, projectId, parsed.loreEntries);
+      return {
+        character,
+        mergedLoreEntries: lore.added,
+        skippedLoreEntries: lore.skipped,
+        ...(avatarNote !== undefined ? { avatarNote } : {}),
+      };
+    } catch (error: unknown) {
+      // 词条合并失败就**回滚卡片与头像**：否则模型重试会再建一张新 id 的同名卡，
+      // 两张都 active、都注入简报。回滚本身失败也不能掩盖原始错误。
+      await this.ops.removeFile(this.characterFile(projectId, id), session).catch(() => undefined);
+      if (avatar) {
+        await this.ops
+          .removeFile(this.characterAvatarPath(projectId, avatar), session)
+          .catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   async updateCharacter(

@@ -91,6 +91,33 @@ const manyChapters = Array.from({ length: 30 }, (_, i) => mk(i + 1, `C${i}`, "�
 const totalCapped = searchChapters(manyChapters, "命中词", { maxPerChapter: 1, maxTotal: 10 });
 check("总结果数受限", totalCapped.length === 10);
 
+// ---- 全半角与长度变化的大小写折叠 ----
+// 全角字母应与半角互相命中
+check("全角查询命中半角正文", searchChapters([mk(1, "T", "abc 出现")], "ＡＢＣ").length === 1);
+check("半角查询命中全角正文", searchChapters([mk(1, "T", "ＡＢＣ 出现")], "abc").length === 1);
+// İ 的 toLowerCase 会变长：不能拿它当定位基准，否则 pos 与原文错位
+const turkish = [mk(1, "T", "İstanbul 大雪")];
+const tk = searchChapters(turkish, "stanbul");
+check(
+  "长度变化的小写折叠不吃掉命中",
+  tk.length === 1,
+  `命中 ${tk.length} 处`,
+);
+check(
+  "命中位置仍与原文对齐",
+  tk.length === 1 && turkish[0].content.slice(tk[0].pos, tk[0].pos + 7).toLowerCase() === "stanbul",
+);
+
+// maxTotal: 1 时标题命中不该把正文命中全吃掉
+const titleAndBody = searchChapters([mk(1, "刺客", "刀光一闪，刺客退去。")], "刺客", {
+  maxTotal: 2,
+  maxPerChapter: 5,
+});
+check(
+  "标题命中之后正文仍能拿到命中",
+  titleAndBody.some((r) => r.pos === null) && titleAndBody.some((r) => r.pos != null),
+);
+
 // ---- 同一章多次命中按出现先后 ----
 const order = searchChapters([mk(1, "T", "一啊二啊三")], "啊");
 check("同章命中按出现顺序", order[0].pos < order[1].pos);

@@ -33,7 +33,15 @@ export interface PluginConfig {
   defaultPrevChapterChars?: number;
   /** 当前章默认摘取的尾部字数 */
   defaultRecentChars?: number;
+  /** 模型单次可要的前文章节数上限（防止一口气把整本书读进简报）。默认 10 */
+  maxPrevChapterCount?: number;
+  /** 单章可摘取的字数上限。默认 20000 */
+  maxPrevChapterChars?: number;
 }
+
+/** 摘录类参数的硬上限：比这更长就不是「摘录」，而是整章/整本进提示词 */
+const HARD_MAX_EXCERPT_CHARS = 20000;
+const HARD_MAX_PREV_CHAPTERS = 20;
 
 /** 配置校验：非法配置在加载期直接抛错（不静默取默认值） */
 export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
@@ -47,10 +55,20 @@ export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
       "dsh-novelnovel: dataDir must stay inside the workspace (relative path, no '..')",
     );
   }
-  const count = (value: number | undefined, fallback: number, field: string): number => {
+  const count = (
+    value: number | undefined,
+    fallback: number,
+    field: string,
+    hardMax?: number,
+  ): number => {
     if (value === undefined) return fallback;
     if (!Number.isInteger(value) || value < 0) {
       throw new Error(`dsh-novelnovel: ${field} must be a non-negative integer`);
+    }
+    if (hardMax !== undefined && value > hardMax) {
+      throw new Error(
+        `dsh-novelnovel: ${field} must be at most ${hardMax} — a larger value would pull whole chapters into every brief`,
+      );
     }
     return value;
   };
@@ -59,6 +77,18 @@ export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
     defaultPrevChapterCount: count(raw.defaultPrevChapterCount, 1, "defaultPrevChapterCount"),
     defaultPrevChapterChars: count(raw.defaultPrevChapterChars, 1500, "defaultPrevChapterChars"),
     defaultRecentChars: count(raw.defaultRecentChars, 3000, "defaultRecentChars"),
+    maxPrevChapterCount: count(
+      raw.maxPrevChapterCount,
+      HARD_MAX_PREV_CHAPTERS,
+      "maxPrevChapterCount",
+      HARD_MAX_PREV_CHAPTERS,
+    ),
+    maxPrevChapterChars: count(
+      raw.maxPrevChapterChars,
+      HARD_MAX_EXCERPT_CHARS,
+      "maxPrevChapterChars",
+      HARD_MAX_EXCERPT_CHARS,
+    ),
   };
 }
 

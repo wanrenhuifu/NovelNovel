@@ -115,21 +115,45 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
           if (!args.title?.trim()) {
             throw new Error("title is required for novel_chapter action=create");
           }
+          if (args.position !== undefined && (!Number.isInteger(args.position) || args.position < 1)) {
+            throw new Error(
+              `position must be a positive integer (1 = first). Got ${args.position}.`,
+            );
+          }
+          const chaptersBefore = await store.listChapterMetas(session, projectId);
           const chapter = await store.createChapter(session, projectId, {
             title: args.title,
             ...(args.text !== undefined ? { content: args.text } : {}),
             ...(args.tags !== undefined ? { tags: args.tags } : {}),
             ...(args.position !== undefined ? { position: args.position } : {}),
           });
+          const chaptersAfter = await store.listChapterMetas(session, projectId);
+          // 回显最终序号：position 超界会被夹到末尾，不回显时模型无从发现落点不符
+          const position = chaptersAfter.findIndex((meta) => meta.id === chapter.id) + 1;
           return {
             action: args.action,
-            summary: `Created chapter 「${chapter.title}」 [${chapter.id}] (${chapter.words} words).`,
-            details: { project_id: projectId, chapter_id: chapter.id, words: chapter.words },
+            summary: lines(
+              `Created chapter 「${chapter.title}」 [${chapter.id}] (${chapter.words} words).`,
+              `  inserted at position ${position} of ${chaptersAfter.length}` +
+                (chaptersBefore.length + 1 !== chaptersAfter.length
+                  ? " — note: the outline changed while writing"
+                  : ""),
+            ),
+            details: {
+              project_id: projectId,
+              chapter_id: chapter.id,
+              position,
+              words: chapter.words,
+            },
           };
         }
 
         if (args.action === "search") {
           if (!args.query?.trim()) throw new Error("query is required for novel_chapter action=search");
+          // limit=0 会让 summary 渲染成「没有任何命中」，模型会当成「这本书里没出现过这个词」
+          if (args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1)) {
+            throw new Error(`limit must be a positive integer. Got ${args.limit}.`);
+          }
           const hits = await store.search(session, projectId, args.query, args.limit ?? 50);
           const summary = lines(
             hits.length === 0

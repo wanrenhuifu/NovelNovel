@@ -44,8 +44,10 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc -p .",
-    "test": "node scripts/test-card-import.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs",
+    "test": "node scripts/test-card-import.mjs && node scripts/test-card-export.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs && node scripts/test-domain-utils.mjs",
+    "test:guard": "node scripts/test-harness-guard.mjs",
     "test:dsh": "node scripts/verify-dsh.mjs",
+    "test:perf": "node scripts/probe-dsh-perf.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm test && npm run typecheck"
   },

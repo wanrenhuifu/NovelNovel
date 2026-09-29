@@ -107,11 +107,33 @@ export function parseSkillPack(text: string): SkillPack {
   return { name: name || skills[0].name, ...(author ? { author } : {}), ...(version ? { version } : {}), skills };
 }
 
-/** 把落盘的技能重新打包，便于分享（与 parseSkillPack 同一个格式） */
+/**
+ * 把落盘的技能重新打包，便于分享（与 parseSkillPack 同一个格式）。
+ *
+ * 导出侧必须做与导入侧**对称**的校验：导入坚持「先全量校验再落盘」，
+ * 导出却放行 `content: "   "` 的话，会做出一个自己的 parseSkillPack 立刻拒绝的包
+ * ——分享出去谁也导不回来。
+ */
 export function buildSkillPack(
   meta: { name: string; author?: string; version?: string },
   skills: PackedSkill[],
 ): SkillPack {
+  if (skills.length === 0) {
+    throw new Error("技能包至少要有一个技能");
+  }
+  for (const skill of skills) {
+    if (!isValidSkillName(skill.name)) {
+      throw new Error(
+        `技能名 "${skill.name}" 不是 kebab-case，导出后 harness 会拒绝加载`,
+      );
+    }
+    if (!skill.description.trim()) {
+      throw new Error(`技能 "${skill.name}" 缺少 description（模型唯一能看到的字段）`);
+    }
+    if (!skill.content.trim()) {
+      throw new Error(`技能 "${skill.name}" 的正文是空的，导出后无法导回`);
+    }
+  }
   return {
     name: meta.name,
     ...(meta.author ? { author: meta.author } : {}),
@@ -123,12 +145,27 @@ export function buildSkillPack(
 /**
  * 渲染并立即回读一次，确认产物能被同一套解析器读出来。
  * 只在导入路径上跑：手写的技能文件坏了是用户自己的事，插件生成的必须自证。
+ * 回读要比对**所有关键字段**，只比 name 会让引号、多行值这类损坏静默通过。
  */
 export function renderPackedSkill(skill: PackedSkill): string {
   const text = renderSkillFile(skill);
   const reread = parseSkillFile(text, skill.name);
-  if (reread.frontmatter.name !== skill.name) {
-    throw new Error(`技能 "${skill.name}" 渲染后回读不一致，已中止导入`);
+  const { frontmatter } = reread;
+  if (frontmatter.name !== skill.name) {
+    throw new Error(`技能 "${skill.name}" 渲染后回读不一致（name），已中止导入`);
+  }
+  if (frontmatter.description !== skill.description) {
+    throw new Error(
+      `技能 "${skill.name}" 渲染后回读不一致（description）：请检查描述里是否有换行或首尾引号`,
+    );
+  }
+  if ((frontmatter.whenToUse ?? "") !== (skill.whenToUse ?? "")) {
+    throw new Error(
+      `技能 "${skill.name}" 渲染后回读不一致（whenToUse）：请检查该字段是否有换行或首尾引号`,
+    );
+  }
+  if (reread.content.trim() !== skill.content.trim()) {
+    throw new Error(`技能 "${skill.name}" 渲染后回读不一致（正文），已中止导入`);
   }
   return text;
 }

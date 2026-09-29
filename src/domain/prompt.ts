@@ -19,14 +19,17 @@ export interface PromptCharacter {
   scenario: string;
 }
 
+/** 主角名（小说场景下的 {{user}} / <USER>） */
+export const DEFAULT_USER_NAME = "主角";
+
 /**
  * 替换 SillyTavern 常用宏。
- * {{char}} → 角色名；{{user}} → 主角名（小说场景下默认为“主角”）。
+ * {{char}} → 角色名；{{user}} → 主角名（小说场景下默认为"主角"）。
  */
 export function replaceMacros(
   text: string,
   charName: string,
-  userName = "主角",
+  userName = DEFAULT_USER_NAME,
 ): string {
   return text
     .replace(/\{\{char\}\}/gi, charName)
@@ -35,8 +38,21 @@ export function replaceMacros(
     .replace(/<USER>/gi, userName);
 }
 
+/** 标题/名字进 `### ` 行时必须单行，否则会被当成新的提示词结构 */
+function singleLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** 挑出模板真正引用的变量（{{var}} 与 {{#if var}}） */
+function templateVars(template: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of template.matchAll(/\{\{#if\s+(\w+)\s*\}\}/g)) names.add(match[1]);
+  for (const match of template.matchAll(/\{\{\s*(\w+)\s*\}\}/g)) names.add(match[1]);
+  return names;
+}
+
 function characterBlock(char: PromptCharacter): string {
-  const name = char.name;
+  const name = singleLine(char.name);
   const parts: string[] = [];
   if (char.description.trim()) {
     parts.push(replaceMacros(char.description, name).trim());
@@ -50,21 +66,29 @@ function characterBlock(char: PromptCharacter): string {
   return `### ${name}\n${parts.join("\n")}`;
 }
 
+/** 关键词/上下文归一化：小写 + 全角转半角，避免「ＡＢＣ」「abc」「，」这类互不命中 */
+function normalizeForMatch(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/\u3000/g, " ");
+}
+
 /**
  * 挑出本次上下文要注入的词条：
- * 无关键词的条目常驻；有关键词的条目仅当任一关键词（逗号分隔、小写比较）
+ * 无关键词的条目常驻；有关键词的条目仅当任一关键词（逗号分隔、大小写与全半角无关）
  * 出现在续写上下文里才注入。禁用或内容为空的条目一律排除。
  */
 export function selectLoreEntries(
   entries: PromptProject["lorebook"],
   contextText: string,
 ): PromptProject["lorebook"] {
-  const ctx = contextText.toLowerCase();
+  const ctx = normalizeForMatch(contextText);
   return entries.filter((e) => {
     if (!e.enabled || !e.content.trim()) return false;
     const keys = e.keys
       .split(/[,，]/)
-      .map((k) => k.trim().toLowerCase())
+      .map((k) => normalizeForMatch(k.trim()))
       .filter(Boolean);
     if (keys.length === 0) return true; // 无关键词 = 常驻条目
     return keys.some((k) => ctx.includes(k));
@@ -78,7 +102,7 @@ function lorebookBlock(
   const active = selectLoreEntries(entries, contextText);
   if (active.length === 0) return null;
   const blocks = active
-    .map((e) => `### ${e.name.trim() || e.keys}\n${e.content.trim()}`)
+    .map((e) => `### ${singleLine(e.name.trim() || e.keys)}\n${e.content.trim()}`)
     .join("\n\n");
   return `## 相关设定词条\n${blocks}`;
 }
@@ -136,6 +160,10 @@ function buildStoryVars(
     persona: "",
     anchorBefore: "",
     anchorAfter: "",
+    // SillyTavern 模板会写 {{char}}/{{user}}。systemPrompt 那条路径走 replaceMacros，
+    // 这里不放进变量表的话 `?? ""` 会把它们静默替成空串（`{{#if char}}` 恒假）。
+    char: characters[0] ? singleLine(characters[0].name) : "",
+    user: DEFAULT_USER_NAME,
   };
 }
 
@@ -156,14 +184,19 @@ const OUTPUT_RULES = [
  * contextText 用于激活 lorebook 中带关键词的条目（无关键词条目常驻）。
  * preset 激活时：systemPrompt 替换默认开场白（支持 {{char}}/{{user}} 宏），
  * storyString 替换默认的设定区块组装。
+ *
+ * 返回值带 `warnings`：story_string 是「整块替换」，模板引用了某个变量而它是空的时候
+ * （最常见的 `{{wiAfter}}`——本应用把词条统一放在 wiBefore），那段设定就**不会**进提示词。
+ * 静默降级最难查，所以把它报出来。
  */
 export function buildSystemPrompt(
   project: PromptProject,
   characters: PromptCharacter[],
   contextText = "",
   preset?: Preset | null,
-): string {
+): { text: string; warnings: string[] } {
   const sections: string[] = [];
+  const warnings: string[] = [];
   const charName = characters[0]?.name ?? "";
 
   const intro = preset?.systemPrompt.trim();
@@ -175,6 +208,18 @@ export function buildSystemPrompt(
   if (preset?.storyString.trim()) {
     const vars = buildStoryVars(project, characters, contextText);
     sections.push(renderStoryString(preset.storyString, vars));
+    // 模板引用了却没有内容的变量 = 这段设定不会进提示词
+    const empty = [...templateVars(preset.storyString)].filter((name) => {
+      if (name === "trim" || name === "else") return false;
+      return !(vars[name] ?? "").trim();
+    });
+    if (empty.length > 0) {
+      warnings.push(
+        `the active preset's story_string references ${empty.map((n) => `{{${n}}}`).join(", ")} ` +
+          "but there is nothing to fill it with, so that part of the brief is empty. " +
+          "Check the preset template and the project's worldbuilding / character cards.",
+      );
+    }
   } else {
     if (project.synopsis.trim()) {
       sections.push(`## 作品简介\n${project.synopsis.trim()}`);
@@ -198,13 +243,22 @@ export function buildSystemPrompt(
 
   sections.push(OUTPUT_RULES);
 
-  return sections.join("\n\n");
+  return { text: sections.join("\n\n"), warnings };
 }
 
 /** 前文章节摘录（续写上下文用） */
 export interface PrevChapterExcerpt {
   title: string;
   text: string;
+}
+
+/**
+ * 围栏长度：正文里出现一行 ``` 就会提前闭合围栏，把后面的文本放到栏外
+ * （prompt 注入）。所以围栏至少比正文里最长的一串反引号长一个。
+ */
+function fenceFor(body: string): string {
+  const longest = [...body.matchAll(/`+/g)].reduce((max, m) => Math.max(max, m[0].length), 0);
+  return "`".repeat(Math.max(3, longest + 1));
 }
 
 /**
@@ -222,14 +276,18 @@ export function buildContinueUserMessage(
   if (prev.length > 0) {
     lines.push("为保持情节连贯，以下是前面章节的结尾摘录，供参考：");
     for (const c of prev) {
-      lines.push(`【${c.title.trim() || "前文章节"}】`, "```", c.text.trim(), "```");
+      const text = c.text.trim();
+      const fence = fenceFor(text);
+      lines.push(`【${singleLine(c.title) || "前文章节"}】`, fence, text, fence);
     }
   }
   if (recentText.trim()) {
+    const text = recentText.trim();
+    const fence = fenceFor(text);
     lines.push("以下是当前章节已有正文的结尾部分，请从其后无缝续写：");
-    lines.push("```");
-    lines.push(recentText.trim());
-    lines.push("```");
+    lines.push(fence);
+    lines.push(text);
+    lines.push(fence);
   }
   if (instruction.trim()) {
     lines.push(`续写要求：${instruction.trim()}`);

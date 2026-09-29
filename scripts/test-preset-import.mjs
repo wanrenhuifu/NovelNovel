@@ -171,7 +171,7 @@ const preset = {
   storyString: "{{#if worldbuilding}}## 世界观\n{{worldbuilding}}\n{{/if}}{{description}}\n{{#if system}}## 要求\n{{system}}{{/if}}",
   createdAt: 0,
 };
-const withPreset = buildSystemPrompt(project, characters, "", preset);
+const withPreset = buildSystemPrompt(project, characters, "", preset).text;
 check("预设: {{char}} 宏替换", withPreset.includes("你是 林晚 的专属写手"));
 check("预设: {{user}} 宏替换为默认主角", withPreset.includes("为 主角 讲故事"));
 check("预设: storyString 渲染世界观", withPreset.includes("## 世界观\n唐代长安"));
@@ -180,7 +180,35 @@ check("预设: system 变量映射写作要求", withPreset.includes("## 要求\
 check("预设: 输出规范仍保留", withPreset.includes("## 输出规范"));
 check("预设: 默认区块被替换", !withPreset.includes("## 作品简介") && !withPreset.includes("## 主要角色设定"));
 
-const withoutPreset = buildSystemPrompt(project, characters, "", null);
+// 模板引用了空变量时必须报警：story_string 是整块替换，空变量 = 那段设定不进提示词
+const sparsePreset = {
+  id: "p2",
+  name: "稀疏模板",
+  kind: "context",
+  systemPrompt: "",
+  storyString: "{{wiAfter}}",
+  createdAt: 0,
+};
+const sparse = buildSystemPrompt(project, characters, "", sparsePreset);
+check("story_string 空变量: 报警", sparse.warnings.some((w) => w.includes("{{wiAfter}}")));
+check("story_string 空变量: 提示词确实为空片段", !sparse.text.includes("唐代长安"));
+
+// {{char}} 在 story_string 里必须解析成角色名（历史 bug：被兜底成空串）
+const charTemplate = {
+  id: "p3",
+  name: "角色宏模板",
+  kind: "context",
+  systemPrompt: "",
+  storyString: "{{#if char}}主角是{{char}}，对手是{{user}}。{{/if}}{{description}}",
+  createdAt: 0,
+};
+const charRendered = buildSystemPrompt(project, characters, "", charTemplate);
+check("story_string: {{char}} 解析为角色名", charRendered.text.includes("主角是林晚"));
+check("story_string: {{user}} 解析为主角", charRendered.text.includes("对手是主角"));
+check("story_string: {{#if char}} 为真", charRendered.text.includes("主角是林晚，对手是主角。"));
+check("story_string: 有内容时不报警", charRendered.warnings.length === 0);
+
+const withoutPreset = buildSystemPrompt(project, characters, "", null).text;
 check("无预设: 默认开场白", withoutPreset.includes("正在创作长篇小说《长安落雪》"));
 check("无预设: 默认区块齐全", withoutPreset.includes("## 作品简介") && withoutPreset.includes("## 主要角色设定"));
 

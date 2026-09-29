@@ -33,6 +33,27 @@ dsh plugin --profile web add .            # 装成 link，指向这个工作树
 
 改完 `src/` 之后要 `npm run build` 再**重开 dsh 会话**——profile 加载的是构建产物，不是源码。
 
+### 装进 DSH 桌面端
+
+桌面端有自己的 profile，叫 `desktop`，由应用独占（`dsh --profile desktop` 启动会被拒），
+但**插件管理是支持的**——桌面端自带的 CLI wrapper 就是以「允许管理 desktop」的方式跑起来的。
+步骤：
+
+```powershell
+# 1) 完全退出 DeepSeek Harness Desktop（它持有 profile 的 package.json 锁）
+# 2) 用桌面端自带的 CLI 装（路径按你的安装位置改；默认装在 D:\DSH）
+& "D:\DSH\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add D:\novelnovel
+# 3) 确认插件层进来了
+& "D:\DSH\resources\runtime\cli\bin\dsh.cmd" --profile desktop --dump-config | Select-String novelnovel
+# 4) 重开桌面端
+```
+
+`desktop` profile 是 `patchReload: live`，但改 `src/` 后仍然要 `npm run build` + 重开会话
+（profile 加载的是 `lib/` 产物）。
+
+⚠️ **桌面端的工作区根 = 那次会话选定的目录**。打开桌面端后在**你的小说目录**里开会话，
+数据才会落在那里（`.novelnovel/`）；在别的目录开会话，`novel_project action=list` 会是空的。
+
 ### npm
 
 还没发布到 npm。发布之后会是 `dsh plugin --profile web add dsh-novelnovel`，装的是预构建产物，
@@ -44,15 +65,20 @@ dsh plugin --profile web add .            # 装成 link，指向这个工作树
 |---|---|
 | `web` | 浏览器界面，交互式写作 |
 | `headless` | 一次性任务：`dsh --profile headless "给《长夜将至》写第三章"` |
+| `desktop` | DSH 桌面端（应用独占，只能按上面那节的方式装插件） |
 
 ⚠️ 只有 `web` / `headless` / `sdk` / `sdk-minimal` / `acp` 这五个名字会从自带模板自动初始化。
 **自己起别的名字只会得到 `dsh-base` 一个 bundle，而 base 只是内核**——没有 Host、没有 HTTP、
-没有一次性 runner，装上也用不了。另外 `desktop` 这个名字被 CLI 保留，会直接拒绝 boot 与插件管理请求。
+没有一次性 runner，装上也用不了。`desktop` 不在其中：它由桌面端应用初始化，`dsh` 启动器会拒绝
+`dsh --profile desktop`（但允许 `dsh plugin --profile desktop`，见上一节）。
 
 ### 验证装上了
 
 ```bash
-dsh --profile web --dump-config | grep -i novelnovel   # 应能看到 # == dsh-novelnovel 那一层
+# 浏览器端 / 一次性任务
+dsh --profile web --dump-config | grep -i novelnovel          # 应能看到 # == dsh-novelnovel 那一层
+# 桌面端（要用自带 CLI）
+& "D:\DSH\resources\runtime\cli\bin\dsh.cmd" --profile desktop --dump-config | Select-String novelnovel
 ```
 
 ### 不支持从 git 直接安装
@@ -63,23 +89,40 @@ dsh --profile web --dump-config | grep -i novelnovel   # 应能看到 # == dsh-n
 ### 从哪个目录启动
 
 dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那个目录>/.novelnovel/`，项目级技能落在
-「最近的含 `.git` 的祖先目录」的 `.dsh/skills/`。所以先 `cd` 到你的小说目录再启动。
+「最近的含 `.git` 的祖先目录」的 `.dsh/skills/`。所以先 `cd` 到你的小说目录再启动（桌面端则是
+在小说目录里开会话）。
 
 ## 兼容性
 
-已在两套环境验证（`npm run test:dsh` 40 项全过 + 真实 headless 会话）：
+**当前结论：适配 DSH 桌面端 `@deepseek-ai/dsh@0.2.0-rc.2`（DSH Desktop，Node 24.18.1）。**
+核查方式（都可复跑）：
 
-- `@deepseek-ai/dsh@0.1.5-rc.1`（npm 上的 `latest`，其子包解析为 `0.1.5-rc.2`）
-- `@deepseek-ai/dsh@0.1.2-rc.1` CLI + `0.1.3-alpha.2` 子包（本机 source checkout 环境）
+- 清单版本门槛用运行中的真品判定：`@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility`
+  跑本包 manifest + 运行时版本 `0.2.0-rc.2` → 无冲突项（不兼容会在安装期就被拒，不会等到运行期）。
+- `src/contract.ts` 镜像的 API 面逐项对照 `0.2.0-rc.2`：`ToolDefinition`/`defineTool`（仍支持
+  author-only 的 `type:"json"` 与 `isConcurrencySafe`）、`ToolRunContext.agent.session.header.cwd`、
+  `ctx.fs` 的读写与 `writeText` 五参签名、`fs/observed` 事件签名、`ctx.skills.register` 的
+  runtime rank 250、`ctx.commands`、`ctx.systemPrompt` —— 均无签名差异。
+- “先读后写”策略的归属判定也没变：`dsh-fs-observation-policy` 仍然从 `actor.agent.session`
+  推导 owner，所以插件写入照旧记在调用方会话名下。
+- 端到端：`npm run test:dsh` 49 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
+  schema 都由 harness 校验）。
+
+历史记录（保留，但已不是当前结论）：`0.1.5-rc.1`（npm `latest`，子包 `0.1.5-rc.2`）与
+`0.1.2-rc.1` CLI + `0.1.3-alpha.2` 子包都验证过 40 项。
 
 `package.json` 的 peerDependencies 用通配 `*`：插件运行时由 `src/harness.ts` 解析 harness 自己的包实例
-（保证与运行中的 harness 同模块实例），不在依赖层面锁版本。`src/contract.ts` 镜像的 API 面已在
-`0.1.3-alpha.2` 与 `0.1.5-rc.2` 之间逐项比对，无签名差异——升级 harness 后重跑一次
-`npm run test:dsh` 即可确认。
+（保证与运行中的 harness 同模块实例），不在依赖层面锁版本。`src/contract.ts` 是逐项比对后的手写副本——
+上游改了签名要靠重新比对发现，所以升级 harness 后**重跑一次 `npm run test:dsh` 与 `npm run test:guard`**。
 
 这一点与生态里多数插件的做法不同（它们写 `>=` 或 caret 区间，代价是 harness 一升级就可能装不上），
 是本仓库有意的取舍：harness 还处在 developer preview，锁区间只会把上游的破坏性变更变成安装期的报错，
 而真正的兼容性由 `contract.ts` 的逐项比对和端到端验证保证。
+
+⚠️ **工作树里不要留 `@deepseek-ai/*` 的副本**（`node_modules/@deepseek-ai/` 里的旧版本就是这种情况）：
+解析链一旦命中它，插件就会加载**第二份 harness**——服务按模块实例注册，双份会重复注册。
+`src/harness.ts` 现在会校验解析结果的版本是否与运行中的 harness 一致，不一致就报错拒绝，
+并告诉你修法；`npm run test:guard` 就是这条行为的用例。
 
 ## 用法
 
@@ -178,9 +221,12 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
     defaultPrevChapterCount: 2    # 简报默认携带的前文章节数（默认 1）
     defaultPrevChapterChars: 2000 # 每个前文章节摘取的尾部字数（默认 1500）
     defaultRecentChars: 4000      # 当前章摘取的尾部字数（默认 3000）
+    maxPrevChapterCount: 5        # 模型单次能要的前文章节数上限（默认 10，硬上限 20）
+    maxPrevChapterChars: 8000     # 单章能摘取的字数上限（默认 20000）
 ```
 
-非法配置（绝对路径、`..`、负数）在加载期直接抛错，不静默取默认值。
+非法配置（绝对路径、`..`、负数、超过硬上限）在加载期直接抛错，不静默取默认值。
+后两项是**上下文预算的闸门**：不设上限时模型可以要求把整本书读进简报。
 
 ## 数据布局
 
@@ -212,20 +258,29 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 
 - **写入路径**：文本读写一律走 `ctx.fs`（受 harness 沙箱与权限策略约束、与 `write`/`edit`
   共用版本语义，并 `emit('fs/observed')` 让变更流与「先读后写」策略保持一致）。
+  写入用**读取时拿到的版本**做 CAS 基准，所以「先读后改」的窗口里被别处改过时会失败并提示重新读取，
+  而不是静默覆盖（索引、词条、预设、正文、工作区指针都走这条路；冲突会先自动重试几次）。
   `ctx.fs` 没有删除与二进制写入能力，删文件与写 PNG 头像用 `node:fs` —— 这条路径**不受沙箱约束**，
-  所以插件自己兜住：目标必须落在会话工作目录内，否则直接拒绝（`novel_character action=export
-  out_path=<工作区外>` 会报错而不是写出去）。
-- **损坏的数据文件**：`project.json` 读不出来的作品目录会被跳过并在 `novel_project action=list`
-  里点名（不让一个坏目录把整个插件堵死）；`workspace.json` 损坏时同样不致命，但此时若有多部作品，
-  解析「当前作品」会要求显式传 `project=` ——**宁可报错也不猜**，避免把正文写进错误的作品。
-  例外是 `chapters/index.json`：它损坏时直接报错，因为静默当成空索引会让下一次建章覆盖掉整份目录。
-  数据文件都是给人手改的，读 JSON 时容忍 BOM 与 CRLF。
+  所以插件自己兜住两道：目标必须落在会话工作目录内（`out_path=<工作区外>` 会报错），
+  且**默认不覆盖已存在的文件**（`out_path` 是模型可控参数，否则一个 `action=export` 就能用 PNG
+  字节盖掉任意工作区文件）。
+- **损坏的数据文件（分级）**：整部作品读不出来（`project.json` 坏）→ 跳过并在
+  `novel_project action=list` 里点名；单张角色卡 / `lorebook.json` / `presets.json` 坏 →
+  跳过该文件、其余照常，写作简报仍然能组装；`workspace.json` 损坏 → 不致命，但多作品时解析
+  「当前作品」必须显式传 `project=`——**宁可报错也不猜**，避免把正文写进错误的作品；
+  `chapters/index.json` **损坏或缺失**都要当心：损坏直接报错，缺失时若 `chapters/` 里已有 `.md`
+  则拒绝写入（静默当空索引会让下一次建章覆盖掉整份大纲）。数据文件都是给人手改的，
+  读 JSON 时容忍 BOM 与 CRLF。
+- **手工改动要守的不变量**：作品 id 就是**目录名**（`project.json` 里的 `id` 只是副本，
+  不一致时该作品会被判为不可读并点名）；章节正文按 `<chapterId>.md` 命名，索引与正文要成对。
 - **harness 依赖不内联**：`@deepseek-ai/*` 是 peer，运行时由 harness 自己提供——服务按模块实例注册，
   内联第二份会重复注册。以 `link:` 方式安装时包位于工作区之外，Node 从包 realpath 找不到 harness
-  的依赖闭包，所以 `src/harness.ts` 会依次尝试：普通 import → 从 harness 进程入口解析 →
-  从 `$DSH_HOME/profiles` 与工作目录解析，并保证与运行中的 harness 是同一个模块实例。
+  的依赖闭包，所以 `src/harness.ts` 会依次尝试：本包旁边 → harness 进程入口（`process.argv[1]`）→
+  `$DSH_HOME/profiles` → 工作目录，并且**每个候选都要自证身份**：解析到的版本必须与运行中的
+  harness 一致，否则报错退出（工作树里残留一份旧 `@deepseek-ai/*` 时，静默加载它会让插件用上
+  第二份服务实例）。`npm run test:guard` 就是这条行为的用例。
 - **API 契约副本**：`src/contract.ts` 是手写的最小类型契约（只含本插件用到的成员），
-  依据 `@deepseek-ai/dsh@0.1.2-rc.1 / 0.1.3-alpha.2` 的真实签名整理。这样插件源码不依赖 harness
+  依据 `@deepseek-ai/dsh@0.2.0-rc.2` 的真实签名整理。这样插件源码不依赖 harness
   的包解析路径就能通过 `tsc`；运行时行为由真实 harness 与端到端验证保证。
 - **技能注册**：用 `ctx.skills.register` 运行时注册（rank 250），而不是去改 `skill-filesystem`
   的 `customSkillDirs`——后者是别的插件行的 config，覆盖它要重述 dsh-base 的整份配置（patch 是整行替换），
@@ -245,17 +300,27 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 ```bash
 npm run build       # esbuild 打包到 lib/
 npm run typecheck   # tsc -p .（严格模式，零错误）
-npm test            # 5 个纯逻辑单测（卡解析 / 预设+提示词 / 检索 / 排序 / 技能包）
-npm run test:dsh    # 端到端验证（需要已装好插件的 profile，默认 novelnovel，可用 DSH_PROFILE 覆盖）
+npm test            # 7 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配）
+npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
+npm run test:dsh    # 端到端验证 49 项（默认 profile: novelnovel，用 DSH_TEST_PROFILE 覆盖）
+npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
+
+`test:dsh` / `test:perf` 会用 **DSH 自带的 Electron Node** 启动测试（harness 包在 `app.asar` 里，
+普通 node 读不到），并自动探测安装目录；可用 `DSH_INSTALL` 指定，`DSH_TEST_PROFILE` 指定装了插件的
+profile。harness 包的解析统一走 `tests/harness-loader.mjs`：**只认运行中的 DSH 安装**，仓库根残留的
+旧副本不会被命中——否则测试进程里会出现第二份服务实例，测出来的东西没有意义。
 
 `npm run test:dsh` 会拉起真实 harness 服务（SystemPrompt + ToolRuntime + LocalFileSystem +
 SkillRegistry + observation policy）并驱动全部工具：作品/章节/词条/角色卡（含 PNG 双写回读）/预设/
 简报组装/关键词注入命中与未命中/检索/导出/技能注册（按 `skills/` 里的 SKILL.md 逐个核对）/项目级技能
 （技能包导入→列出→导出→再导入→删除，含手写技能不被覆盖、校验失败不写一半）/命令处理器/配置校验/
-工作区边界与损坏文件容错/观察记录归属/卸载清理/系统提示词段，共 40 项检查，不调用模型。
-`npm test` 是它的快速补充：5 个纯逻辑单测直接测 `src/domain/` 里的解析与组装函数。
+工作区边界与损坏文件容错（坏作品目录、坏角色卡、索引缺失、拒绝覆盖已有文件、追加空白保真、
+`position`/`limit` 边界、同名预设）/观察记录归属/真分发链路（`ctx.tools.execute`：参数校验 + 输出
+schema）/卸载清理/系统提示词段，共 49 项检查，不调用模型。
+`npm test` 是它的快速补充：7 个纯逻辑单测直接测 `src/domain/` 里的解析与组装函数，
+其中「导入 → 改字段 → 导出 → 再导入」专门守着「改了角色卡再导出不会退回旧值」这条。
 
-`tests/perf-probe.mjs` 是性能探针（在 profile 目录里跑）：铺 3 部 × 200 章，
+`tests/perf-probe.mjs` 是性能探针（`npm run test:perf`）：铺 3 部 × 200 章，
 打印每个工具调用的耗时与 `ctx.fs` 调用次数。解析作品引用只读元数据、统计字数才读正文，
 这条边界靠它守住——把正文读回解析路径会让一次 `action=append` 的调用数从 39 涨到 1839。

@@ -8,6 +8,16 @@
 import { buildContinueUserMessage, buildSystemPrompt, selectLoreEntries } from "../domain/prompt";
 import { lines, TEXT_OUTPUT, textRender, type ToolDeps } from "./shared";
 
+/**
+ * 把简报参数夹到配置上限内。
+ * 不夹的话 `prev_chapters: 999999` 会顺序读入此前每一章的全文、`prev_chars` 极大时
+ * 整本书进提示词——都是模型一口气把上下文预算烧光的方式。
+ */
+function clamp(value: number, max: number): number {
+  if (!Number.isFinite(value)) return max;
+  return Math.min(Math.max(0, Math.trunc(value)), max);
+}
+
 export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps): void {
   ctx.tools.register(
     defineTool({
@@ -36,15 +46,15 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
         },
         prev_chapters: {
           type: "number",
-          description: `How many preceding chapters to excerpt for continuity. Defaults to ${config.defaultPrevChapterCount}.`,
+          description: `How many preceding chapters to excerpt for continuity. Defaults to ${config.defaultPrevChapterCount}, maximum ${config.maxPrevChapterCount}.`,
         },
         prev_chars: {
           type: "number",
-          description: `Characters taken from the tail of each preceding chapter. Defaults to ${config.defaultPrevChapterChars}.`,
+          description: `Characters taken from the tail of each preceding chapter. Defaults to ${config.defaultPrevChapterChars}, maximum ${config.maxPrevChapterChars}.`,
         },
         recent_chars: {
           type: "number",
-          description: `Characters taken from the tail of this chapter as the continuation anchor. Defaults to ${config.defaultRecentChars}.`,
+          description: `Characters taken from the tail of this chapter as the continuation anchor. Defaults to ${config.defaultRecentChars}, maximum ${config.maxPrevChapterChars}.`,
         },
       },
       output: { schema: TEXT_OUTPUT, render: textRender },
@@ -59,15 +69,15 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
         const presetFile = await store.readPresets(session, projectId);
         const preset = store.activePreset(presetFile);
 
-        const prevCount = args.prev_chapters ?? config.defaultPrevChapterCount;
-        const prevChars = args.prev_chars ?? config.defaultPrevChapterChars;
-        const recentChars = args.recent_chars ?? config.defaultRecentChars;
+        const prevCount = clamp(args.prev_chapters ?? config.defaultPrevChapterCount, config.maxPrevChapterCount);
+        const prevChars = clamp(args.prev_chars ?? config.defaultPrevChapterChars, config.maxPrevChapterChars);
+        const recentChars = clamp(args.recent_chars ?? config.defaultRecentChars, config.maxPrevChapterChars);
         const prev = await store.previousExcerpts(
           session,
           projectId,
           chapter.id,
-          Math.max(0, prevCount),
-          Math.max(0, prevChars),
+          prevCount,
+          prevChars,
         );
         // 注意 slice(-0) === slice(0) 会取到整章，0 必须单独处理
         const recent = recentChars > 0 ? chapter.content.trim().slice(-recentChars) : "";
@@ -106,7 +116,7 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           `preset: ${preset ? `${preset.name} (${preset.kind})` : "(built-in default)"}`,
           "",
           "## System prompt — the author's setting & style guidance (follow it)",
-          systemPrompt,
+          systemPrompt.text,
           "",
           "## Instruction block — treat this as the writing task for this round",
           userMessage,
@@ -121,6 +131,7 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           skipped > 0
             ? `(skipped ${skipped} injectable entries whose keywords did not appear)`
             : null,
+          ...systemPrompt.warnings.map((warning) => `⚠️ ${warning}`),
           "",
           "## Participating characters",
           characters.length > 0
@@ -137,7 +148,8 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
             chapter_title: chapter.title,
             chapter_words: chapter.words,
             preset: preset?.name ?? null,
-            system_prompt_chars: systemPrompt.length,
+            system_prompt_chars: systemPrompt.text.length,
+            preset_warnings: systemPrompt.warnings,
             prev_chapters: prev.map((item) => item.title),
             recent_chars: recent.length,
             injected_entries: injected.map((entry) => entry.name),

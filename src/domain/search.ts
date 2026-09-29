@@ -19,8 +19,26 @@ export interface SearchableChapter<Id extends string | number> {
   content: string;
 }
 
+/** 全角 ASCII（ＡＢＣ）与全角标点（，）折成半角，让「全半角互相命中」 */
+function foldWidth(text: string): string {
+  return text
+    .replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/\u3000/g, " ");
+}
+
 /**
- * 全文搜索：大小写不敏感，标题与正文都搜。
+ * 归一化用于**定位**：返回值必须与原串等长，否则命中位置会错位。
+ * `toLowerCase()` 在少数语言（土耳其语 İ → i̇）会改变长度——那时退回原串，
+ * 宁可大小写不敏感失效，也不能把摘要切错位置。
+ */
+function foldForSearch(text: string): string {
+  const width = foldWidth(text);
+  const lowered = width.toLowerCase();
+  return lowered.length === text.length ? lowered : width;
+}
+
+/**
+ * 全文搜索：大小写与全半角不敏感，标题与正文都搜。
  * 每章正文最多取前 maxPerChapter 处命中，总结果上限 maxTotal；
  * 章节按传入顺序（调用方保证已按 sortOrder 排序），命中按出现先后。
  */
@@ -31,13 +49,15 @@ export function searchChapters<
   query: string,
   { maxPerChapter = 20, maxTotal = 200 } = {},
 ): SearchMatch<NonNullable<C["id"]>>[] {
-  const q = query.trim().toLowerCase();
+  const q = foldForSearch(query.trim());
   if (!q) return [];
   const results: SearchMatch<NonNullable<C["id"]>>[] = [];
   for (const ch of chapters) {
     if (results.length >= maxTotal) break;
-    // 标题命中：摘要取正文开头
-    if (ch.title.toLowerCase().includes(q) && results.length < maxTotal) {
+    // 标题命中：摘要取正文开头。它占正文预算里的一格（而不是在正文之外另算），
+    // 这样 maxTotal=1 时正文还能拿到一条命中，而不是被标题全吃掉。
+    const titleHit = foldForSearch(ch.title).includes(q);
+    if (titleHit && results.length < maxTotal) {
       const bodyStart = ch.content.slice(0, 40).replace(/\s+/g, " ").trim();
       results.push({
         chapterId: ch.id as NonNullable<C["id"]>,
@@ -50,11 +70,11 @@ export function searchChapters<
       });
     }
     const text = ch.content;
-    const lower = text.toLowerCase();
+    const haystack = foldForSearch(text);
     let from = 0;
-    let count = 0;
+    let count = titleHit ? 1 : 0;
     while (count < maxPerChapter && results.length < maxTotal) {
-      const idx = lower.indexOf(q, from);
+      const idx = haystack.indexOf(q, from);
       if (idx < 0) break;
       results.push({
         chapterId: ch.id as NonNullable<C["id"]>,

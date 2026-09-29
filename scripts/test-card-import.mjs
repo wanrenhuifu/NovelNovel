@@ -168,12 +168,19 @@ const richBook = {
         { key: "旧式单键", content: "旧格式正文" },
         { keys: [], content: "无关键词=常驻词条" },
         { keys: ["宏"], content: "{{char}}与{{user}}在雨夜相遇。" },
+        // 单个键里带逗号：存储格式是「逗号分隔」，不拆开的话注入时会被当成两个键
+        { keys: ["血月,祭坛"], content: "逗号键正文" },
+        // 只有空白的键：切完为空 → 会静默变成「常驻注入」（每回合全文进提示词）
+        { keys: ["   "], content: "空白键正文" },
+        // 全角逗号同理
+        { keys: ["夜祷，祭司"], content: "全角逗号键正文" },
       ],
     },
   },
 };
 const lore2 = extractLorebookEntries(CharacterCard.from_json(richBook));
-check("空内容条目被过滤（6→5）", lore2.length, 5);
+// 9 条原始条目里丢弃 1 条空内容（「丁」），其余 8 条保留
+check("空内容条目被过滤（9→8）", lore2.length, 8);
 check("entry_name 优先于 name 与 keys", lore2[0]?.name, "明面上的名字");
 check("多关键词合并", lore2[0]?.keys, "甲, 乙");
 check("enabled=false 保留为禁用", lore2[1]?.enabled, false);
@@ -184,6 +191,9 @@ check(
   lore2[4]?.content,
   "测试角色与主角在雨夜相遇。",
 );
+check("单键里的半角逗号被拆开", lore2[5]?.keys, "血月, 祭坛");
+check("只有空白的键 → 常驻（不会变成命中任意文本）", lore2[6]?.keys, "");
+check("全角逗号也拆", lore2[7]?.keys, "夜祷, 祭司");
 
 // 6. parseCharacterBytes 完整链路：JSON 字节 → { character, loreEntries }
 console.log("--- parseCharacterBytes ---");

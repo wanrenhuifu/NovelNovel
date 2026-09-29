@@ -20,7 +20,8 @@ export interface CardFields {
   mesExample: string;
   creatorNotes: string;
   creator: string;
-  lorebookCount: number;
+  /** 卡内世界书的**原始**条目数（不是并入项目 lorebook 的数量，那个由导入结果给出） */
+  lorebookEntriesInCard: number;
   /** 是否参与写作（其设定会被注入提示词） */
   active: boolean;
   createdAt: number;

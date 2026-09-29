@@ -1,15 +1,16 @@
-// 临时性能对比脚本：3 部作品 × 200 章（每章 2000 汉字），测清理 pass 的收益。
-// 用法：在能解析 harness 依赖的 profile 目录下运行
-//   node /d/novelnovel/dsh-plugin/tests/perf-probe.mjs
+// 性能探针：3 部作品 × 200 章（每章 2000 汉字），打印每个工具调用的耗时与 ctx.fs 调用次数。
+// harness 包由 tests/harness-loader.mjs 统一解析到运行中的 DSH 安装（见该文件说明）。
+//   npm run test:dsh 的环境下运行：
+//   <DSH 安装>\DeepSeek Harness.exe  <仓库>/tests/perf-probe.mjs   （ELECTRON_RUN_AS_NODE=1）
+// PLUGIN_PATH 可直接指向某个 bundle 文件（用于对比旧路径变体）。
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { load, registerHarnessHook } from "./harness-loader.mjs";
 
-const require = createRequire(join(process.cwd(), "anchor.mjs"));
-const load = async (spec) => import(pathToFileURL(require.resolve(spec)).href);
-// PLUGIN_PATH 可直接指向某个 bundle 文件（用于对比旧路径变体）
+registerHarnessHook(fileURLToPath(new URL("..", import.meta.url)));
+
 const loadPlugin = async () =>
   process.env.PLUGIN_PATH
     ? import(pathToFileURL(process.env.PLUGIN_PATH).href)

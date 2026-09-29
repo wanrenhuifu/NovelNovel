@@ -1,25 +1,34 @@
 /**
  * dsh-novelnovel 端到端验证：在真实 harness 服务上跑通插件的全部工具。
  *
- * 运行方式（必须在一个能解析到 harness 依赖的 profile 目录里运行，
- * 因为 @deepseek-ai/* 由 profile 的 node_modules 提供）：
+ * 运行方式：
  *
- *   npm run test:dsh                          # 自动切到 profile 目录
+ *   npm run test:dsh                          # 用 DSH 自带的 Electron Node 跑（asar 路径需要它）
  *   # 或手动：cd "$DSH_HOME/profiles/<profile>" && node <仓库>/tests/verify.mjs
  *
+ * harness 包由 tests/harness-loader.mjs 统一解析到**运行中的 DSH 安装**
+ * （仓库根可能残留旧副本，先命中它就会加载出第二份服务实例）。
+ *
  * 验证内容：工具注册 + 作品/章节/角色卡/世界书/预设/上下文组装/导出全链路，
- * 以及技能注册与 config 校验。不调用任何模型。
+ * 技能注册、命令、系统提示词段、观察记录归属、真分发链路，以及 config 校验。不调用任何模型。
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { harnessRoot, load, registerHarnessHook, resolveFrom } from "./harness-loader.mjs";
 
-const require = createRequire(join(process.cwd(), "anchor.mjs"));
-const load = async (specifier) =>
-  import(pathToFileURL(require.resolve(specifier)).href);
+// 必须在任何插件/服务模块之前：把仓库发出的 @deepseek-ai/* 改派回 harness 安装
+registerHarnessHook(fileURLToPath(new URL("..", import.meta.url)));
 
 let passed = 0;
 const step = (name) => console.log(`\n▸ ${name}`);
@@ -30,6 +39,7 @@ const ok = (message, extra = "") => {
 
 // ── 启动一个最小 harness：系统提示词 + 工具注册表 + 本地文件系统 + 技能注册表
 
+console.log(`harness: ${harnessRoot()}`);
 const { Context } = await load("@deepseek-ai/cordis");
 const { default: SystemPrompt } = await load("@deepseek-ai/dsh-system-prompt");
 const { default: ToolRuntime } = await load("@deepseek-ai/dsh-tools");
@@ -85,6 +95,32 @@ const callWith = async (exec, name, args) => {
   const definition = ctx.tools.get(name);
   if (!definition) throw new Error(`tool "${name}" is not registered`);
   return definition.execute(args, exec);
+};
+
+/**
+ * 真分发链路：走 ctx.tools.execute（参数校验 → 策略 → 定义自己的 execute → 输出校验 → 渲染）。
+ * 上面两个 helper 直接调定义，绕过了 harness 的 schema 校验——工具参数键名写错、或者
+ * 声明的 output schema 与返回值漂移，只有这条路径能发现（0.2.0-rc.2 的 validateArgs /
+ * valueSchema 投影都在这里）。
+ */
+const dispatch = async (name, args) => {
+  const controller = new AbortController();
+  return ctx.tools.execute({
+    callId: `dispatch_${name}`,
+    rootCallId: `dispatch_${name}`,
+    name,
+    arguments: args,
+    agent: { id: "agent_dispatch", session: { header: { cwd: workspace } } },
+    signal: controller.signal,
+  });
+};
+
+/** 从分发结果里取出工具返回值（失败时把 model-facing 内容带进断言信息） */
+const dispatchedValue = (result) => {
+  if (result.isError) {
+    throw new Error(`dispatch failed: ${result.content.map((block) => block.text).join("")}`);
+  }
+  return result.value;
 };
 
 const toolNames = ctx.tools
@@ -399,7 +435,7 @@ ok("backup export", `${backupJson.characters.length} cards, ${backupJson.loreboo
 step("skills");
 const skills = (await ctx.skills.list()).map((skill) => skill.name);
 // 不硬编码技能名：加了一个 SKILL.md 却因为 frontmatter 写错而静默注册失败，是最容易漏的一类回归
-const bundledDir = join(dirname(require.resolve("dsh-novelnovel/package.json")), "skills");
+const bundledDir = join(dirname(resolveFrom("dsh-novelnovel/package.json")), "skills");
 const bundled = readdirSync(bundledDir)
   .map((entry) => {
     const file = join(bundledDir, entry, "SKILL.md");
@@ -597,6 +633,117 @@ assert.equal(listing.details.unreadable.length, 1, "坏目录应被跳过并报�
 assert.ok(listing.summary.includes("broken"), "报告里应点名坏目录");
 ok("a broken project directory is skipped and reported");
 
+// 2b) 单张角色卡坏掉不该让 novel_context / 卡片列表整体失效
+const charactersDir = join(workspace, ".novelnovel", "projects", "novel", "characters");
+writeFileSync(join(charactersDir, "broken.json"), "{ not json", "utf8");
+const resilientContext = await call("novel_context", { chapter: "1", project: "novel" });
+assert.equal(resilientContext.action, "context", "一张坏卡不该让简报组装失败");
+ok("a corrupted character card does not break the writing brief");
+rmSync(join(charactersDir, "broken.json"), { force: true });
+
+// 2c) 二进制导出不得覆盖已存在的文件（out_path 是模型可控参数）
+const indexFile = join(workspace, ".novelnovel", "projects", "novel", "chapters", "index.json");
+const indexBackup = readFileSync(indexFile, "utf8");
+await assert.rejects(
+  () =>
+    call("novel_character", {
+      action: "export",
+      character: characterId,
+      project: "novel",
+      out_path: indexFile,
+    }),
+  /refusing to overwrite the existing file/,
+  "导出到已有文件必须被拒绝",
+);
+assert.equal(readFileSync(indexFile, "utf8"), indexBackup, "被拒绝的导出不能改动文件");
+ok("binary export refuses to overwrite an existing file");
+
+// 2d) 追加保真：前导空行与 markdown 硬换行（行尾两空格）是正文的一部分
+{
+  const created = await call("novel_chapter", {
+    action: "create",
+    project: "novel",
+    title: "空白保真",
+  });
+  const chapterId = created.details.chapter_id;
+  await call("novel_chapter", {
+    action: "append",
+    project: "novel",
+    chapter: chapterId,
+    text: "\n首行前面有空行  \n第二行带硬换行",
+  });
+  const body = readFileSync(
+    join(workspace, ".novelnovel", "projects", "novel", "chapters", `${chapterId}.md`),
+    "utf8",
+  );
+  assert.ok(body.includes("首行前面有空行  \n第二行带硬换行"), "硬换行与空行必须原样保留");
+  assert.ok(body.startsWith("\n"), "前导空行不能被 trim 掉");
+  await call("novel_chapter", {
+    action: "append",
+    project: "novel",
+    chapter: chapterId,
+    text: "第三段",
+  });
+  const second = readFileSync(
+    join(workspace, ".novelnovel", "projects", "novel", "chapters", `${chapterId}.md`),
+    "utf8",
+  );
+  assert.ok(second.includes("第二行带硬换行\n\n第三段"), "追加之间补一个空行分隔");
+  await call("novel_chapter", {
+    action: "delete",
+    project: "novel",
+    chapter: chapterId,
+    confirm: true,
+  });
+  ok("append preserves meaningful whitespace and only adds a separator");
+}
+
+// 2e) 参数边界：不能让模型拿到「假否定」或静默错位的落点
+await assert.rejects(
+  () => call("novel_chapter", { action: "search", project: "novel", query: "雪", limit: 0 }),
+  /limit must be a positive integer/,
+  "limit=0 会渲染成「没有命中」，必须报错",
+);
+await assert.rejects(
+  () => call("novel_chapter", { action: "create", project: "novel", title: "错位", position: 0 }),
+  /position must be a positive integer/,
+  "position=0 会被静默当成追加，必须报错",
+);
+const positioned = await call("novel_chapter", {
+  action: "create",
+  project: "novel",
+  title: "插入到首位",
+  position: 1,
+});
+assert.equal(positioned.details.position, 1, "返回里要回显最终序号");
+await call("novel_chapter", {
+  action: "delete",
+  project: "novel",
+  chapter: positioned.details.chapter_id,
+  confirm: true,
+});
+ok("position/limit boundaries are validated and the final position is echoed");
+
+// 2f) 同名预设：再加一个必须报错，而不是并存到「精确匹配永远命中第一个」
+await call("novel_preset", { action: "add", project: "novel", name: "重名测试", system_prompt: "甲" });
+await assert.rejects(
+  () =>
+    call("novel_preset", {
+      action: "add",
+      project: "novel",
+      name: "重名测试",
+      system_prompt: "乙",
+    }),
+  /already exists/,
+  "同名 add 应被拒绝",
+);
+await assert.rejects(
+  () => call("novel_preset", { action: "update", project: "novel", preset: "重名测试", name: "  " }),
+  /cannot be empty/,
+  "空名必须报错，而不是报「已更新」却什么都没改",
+);
+ok("duplicate preset names and empty names are refused");
+
 // 3) 没有当前作品且存在多个作品时，必须显式指定，避免写错作品
 await call("novel_project", { action: "create", title: "第二部" });
 writeFileSync(join(workspace, ".novelnovel", "workspace.json"), "{ broken", "utf8");
@@ -670,6 +817,62 @@ const otherIntent = await ctx.waterfall(
 );
 assert.equal(otherIntent.kind, "createIfAbsent", "未观察过该文件的会话不应拿到版本校验意图");
 ok("plugin writes are recorded in the read-before-write gate for the calling session");
+
+// ── 真分发链路：参数校验 + 输出校验都由 harness 执行（上面所有检查都绕过了它）
+
+step("dispatch through ctx.tools.execute");
+const dispatchedProject = dispatchedValue(
+  await dispatch("novel_project", { action: "show", project: "novel" }),
+);
+assert.equal(dispatchedProject.action, "show");
+assert.ok(dispatchedProject.summary.includes("长夜将至"), "分发结果应带回简报文本");
+assert.equal(dispatchedProject.details.project_id, "novel", "details 走 json 节点，值应原样透出");
+ok("arguments validated and declared output schema enforced on a real dispatch");
+
+const dispatchedChapter = dispatchedValue(
+  await dispatch("novel_chapter", { action: "list", project: "novel" }),
+);
+assert.equal(dispatchedChapter.details.chapters.length > 0, true);
+ok("second action dispatches too", `${dispatchedChapter.details.chapters.length} chapters`);
+
+// 参数校验确实生效：缺必填字段的调用必须成为错误结果，而不是抛到调用方
+const invalid = await dispatch("novel_project", { action: "create" });
+assert.equal(invalid.isError, true, "缺 title 的 create 应被参数校验拦下");
+assert.ok(
+  invalid.content.map((block) => block.text).join(" ").length > 0,
+  "错误结果要有模型可读的文本",
+);
+ok("invalid arguments become a normal error result");
+
+// ── 索引缺失：有正文却没有索引时必须拒绝写入（否则全书大纲会被一次建章覆盖）
+//    放在这里是因为它会新建作品，而自动 slug 的序号会影响前面的断言。
+
+step("missing chapter index");
+const orphan = await call("novel_project", { action: "create", title: "索引缺失" });
+const orphanProject = orphan.details.project_id;
+await call("novel_chapter", { action: "create", title: "第一章" });
+const orphanIndex = join(
+  workspace,
+  ".novelnovel",
+  "projects",
+  orphanProject,
+  "chapters",
+  "index.json",
+);
+const orphanIndexBackup = readFileSync(orphanIndex, "utf8");
+rmSync(orphanIndex, { force: true });
+await assert.rejects(
+  () => call("novel_chapter", { action: "create", title: "第二章" }),
+  /index\.json is missing/,
+  "有正文却没有索引时必须拒绝写入",
+);
+// 空目录里缺索引是正常的（首次建章），不该被拦
+const emptyProject = await call("novel_project", { action: "create", title: "空作品" });
+const emptyCreate = await call("novel_chapter", { action: "create", title: "第一章" });
+assert.equal(emptyCreate.action, "create", "空目录里没有索引时应当允许建章");
+assert.ok(emptyProject.details.project_id);
+writeFileSync(orphanIndex, orphanIndexBackup, "utf8");
+ok("a missing chapter index with existing prose refuses to write");
 
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 

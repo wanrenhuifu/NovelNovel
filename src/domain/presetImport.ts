@@ -30,14 +30,19 @@ function isInstruct(o: Record<string, unknown>): boolean {
   return "input_sequence" in o && "output_sequence" in o;
 }
 
-/** context 模板检测：有 story_string 字段 */
-function isContext(o: Record<string, unknown>): boolean {
-  return "story_string" in o;
+/** 只有内容真的是字符串才算「认得出」——`{content: 42}` 是坏文件，不是空预设 */
+function nonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
-/** sysprompt 检测：有 content 且非 instruct（排除误判） */
+/** context 模板检测：story_string 是字符串（空串也算认得出，由调用方报「空操作」） */
+function isContext(o: Record<string, unknown>): boolean {
+  return typeof o.story_string === "string";
+}
+
+/** sysprompt 检测：content 是字符串且非 instruct（排除误判） */
 function isSysprompt(o: Record<string, unknown>): boolean {
-  return "content" in o && !isInstruct(o);
+  return typeof o.content === "string" && !isInstruct(o);
 }
 
 function parseInstruct(o: Record<string, unknown>): ParsedPreset {
@@ -84,7 +89,8 @@ function parseEnvelope(o: Record<string, unknown>): ParsedPreset {
   const sys = isRecord(o.sysprompt) ? o.sysprompt : null;
   const storyString = ctx ? str(ctx.story_string) : "";
   const systemPrompt = sys ? str(sys.content) : "";
-  const name = str(ctx?.name ?? sys?.name).trim() || "未命名预设";
+  // context.name 为空串时要回退到 sysprompt.name，否则「有名字的信封」会被叫成未命名
+  const name = (str(ctx?.name).trim() || str(sys?.name).trim()) || "未命名预设";
 
   const notes: string[] = [];
   if (isRecord(o.instruct)) {
@@ -92,6 +98,12 @@ function parseEnvelope(o: Record<string, unknown>): ParsedPreset {
   }
   if (isRecord(o.reasoning)) {
     notes.push("reasoning（思考格式）部分已忽略");
+  }
+  if (sys && sys.content !== undefined && typeof sys.content !== "string") {
+    notes.push("sysprompt.content 不是字符串，已忽略");
+  }
+  if (ctx && ctx.story_string !== undefined && typeof ctx.story_string !== "string") {
+    notes.push("context.story_string 不是字符串，已忽略");
   }
 
   return {
@@ -135,8 +147,26 @@ export function parsePresetFile(text: string): ParsedPreset {
 
   // 裸预设按特征检测，顺序：instruct > context > sysprompt > reasoning
   if (isInstruct(json)) return parseInstruct(json);
-  if (isContext(json)) return parseContext(json);
-  if (isSysprompt(json)) return parseSysprompt(json);
+  if (isContext(json)) {
+    const parsed = parseContext(json);
+    if (!nonEmptyString(parsed.preset.storyString)) {
+      throw new Error(
+        "这个预设的 story_string 是空的：导入它等于什么都不改（简报会退回内置默认提示词）。" +
+          "请确认选对了文件。",
+      );
+    }
+    return parsed;
+  }
+  if (isSysprompt(json)) {
+    const parsed = parseSysprompt(json);
+    if (!nonEmptyString(parsed.preset.systemPrompt)) {
+      throw new Error(
+        "这个预设的 content 是空的：导入它等于什么都不改（简报会退回内置默认提示词）。" +
+          "请确认选对了文件。",
+      );
+    }
+    return parsed;
+  }
   if ("prefix" in json && "suffix" in json) {
     throw new Error("这是 reasoning（思考格式）预设，小说写作暂不适用");
   }

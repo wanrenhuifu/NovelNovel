@@ -32,9 +32,20 @@ export function isValidSkillName(name: string): boolean {
   return SKILL_NAME_PATTERN.test(name);
 }
 
-/** 解掉 YAML 引号：frontmatter 是手写的，单双引号都容忍 */
+/**
+ * 解掉 YAML 引号：frontmatter 是手写的，单双引号都容忍。
+ * **只有首尾是同一个引号才剥**——无条件剥首尾会让 `Use "quotes"` 渲染→回读
+ * 变成 `Use "quotes`（少一个引号），而技能包的自证只比 name，静默通过。
+ */
 function unquote(value: string | undefined): string {
-  return (value ?? "").replace(/^["']|["']$/g, "").trim();
+  const text = (value ?? "").trim();
+  if (text.length >= 2) {
+    const first = text[0];
+    if ((first === '"' || first === "'") && text.endsWith(first)) {
+      return text.slice(1, -1).trim();
+    }
+  }
+  return text;
 }
 
 /**
@@ -45,7 +56,10 @@ function unquote(value: string | undefined): string {
  * source 是出错信息里用来定位的标签——插件技能传文件路径，技能包传 `包名#技能名`。
  */
 export function parseSkillFile(text: string, source: string): ParsedSkillFile {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  // BOM 与 skillPack 的解析口径保持一致：Notepad 存过的 SKILL.md 会带 BOM，
+  // 不剥掉就会报「没有 frontmatter」，而 novel_skill list 会把它吞成 null 静默消失。
+  const body = text.replace(/^\uFEFF/, "");
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(body);
   if (!match) throw new Error(`skill file has no frontmatter: ${source}`);
   const data = new Map<string, string>();
   for (const line of match[1].split(/\r?\n/)) {

@@ -1,16 +1,20 @@
 /**
  * DSH 插件 API 的最小契约（手写副本，仅类型，不含运行时实现）。
  *
- * 依据真实签名整理（@deepseek-ai/dsh 0.1.2-rc.1 / 0.1.3-alpha.2）：
- *   - packages/core/tools/src/{index,schema}.ts   → ToolDefinition / defineTool / ToolRunContext
- *   - packages/fs/fs/src/{index,types}.ts         → ctx.fs
- *   - packages/skill/skill/src/index.ts           → ctx.skills.register
- *   - packages/interaction/commands/src/index.ts  → ctx.commands.register
- *   - packages/core/system-prompt/src/index.ts    → ctx.systemPrompt.section
- *   - packages/cordis（@deepseek-ai/cordis）       → Context
+ * 依据真实签名整理（@deepseek-ai/dsh 0.2.0-rc.2 / DSH Desktop）：
+ *   - packages/core/tools/src/{index,schema,types}.ts → ToolDefinition / defineTool / ToolRunContext
+ *   - packages/fs/fs/src/{index,types}.ts             → ctx.fs（FsVersion / FsTarget / FsObservation）
+ *   - packages/core/agent/src/runtime-types.ts        → Agent（含 `.session`）
+ *   - packages/core/session/src/types.ts              → Session / SessionHeader
+ *   - packages/skill/skill/src/index.ts               → ctx.skills.register（runtime rank 250）
+ *   - packages/interaction/commands/src/index.ts      → ctx.commands.register
+ *   - packages/core/system-prompt/src/index.ts        → ctx.systemPrompt.section
+ *   - packages/cordis（@deepseek-ai/cordis）           → Context
  *
  * 运行时的 defineTool 只有一份真品，由 harness.ts 解析（见该文件注释）；
  * 这里提供编译期类型，让插件源码不依赖 harness 的包解析路径。
+ * 「未使用」标注的成员是为对齐真实签名保留的对照项——加进来是为了让下一次上游变更
+ * 能被 `npm run typecheck` 之外的逐项比对发现，而不是靠记得去翻源码。
  */
 
 /** 模型可见的内容块（工具只产出文本） */
@@ -19,6 +23,7 @@ export interface TextBlock {
   text: string;
 }
 export type ContentBlock = TextBlock;
+
 
 export type JsonValue =
   | string
@@ -78,6 +83,28 @@ type InferObject<P> = P extends Record<string, SchemaNode>
 /** 参数根是隐式 object：由 parameters 声明推导 execute 的 args 类型 */
 export type InferArgs<S extends Parameters> = InferObject<S>;
 
+/**
+ * 会话身份：本插件只读 `header.cwd`（相对路径解析基准，也是与首方 dsh-tool-fs 同口径的取法）。
+ * 真品另有 id/createdAt 等字段，用不到就不复制——契约副本复制得越多，上游加字段时越容易漏。
+ * 因此这里每个成员都可选：真实的 Session 结构上满足它，测试里的最小桩也满足。
+ */
+export interface SessionHeader {
+  readonly id?: string;
+  readonly createdAt?: number;
+  /** 会话工作目录；相对路径的解析基准 */
+  readonly cwd?: string;
+}
+
+export interface Session {
+  readonly header: SessionHeader;
+}
+
+/** 调用方 agent。`session` 同时是文件系统观察策略识别 owner 的途径（它读 actor.agent.session） */
+export interface Agent {
+  readonly id: string;
+  readonly session: Session;
+}
+
 /** 工具的调用上下文（exec 参数） */
 export interface ToolRunContext {
   readonly callId: string;
@@ -85,10 +112,7 @@ export interface ToolRunContext {
   readonly arguments: unknown;
   /** 调用方拥有的取消信号：所有异步 IO 都必须传递 */
   readonly signal: AbortSignal;
-  readonly agent?: {
-    readonly id: string;
-    readonly session: { readonly header: { readonly cwd?: string } };
-  };
+  readonly agent?: Agent;
 }
 
 export interface ToolDefinition {
@@ -138,20 +162,26 @@ export interface FsTarget {
   readonly targetKey: unknown;
   readonly displayPath: string;
 }
+/** 内容版本：写入意图与观察记录都用它做 CAS 基准 */
+export type FsVersion = unknown;
 export interface FsInfo {
   readonly type: "file" | "directory" | "other";
   readonly size?: number;
-  readonly version: unknown;
+  readonly version: FsVersion;
 }
 export interface FsDirEntry {
   readonly name: string;
   readonly type: "file" | "directory" | "other";
   readonly target: FsTarget;
 }
-export type FsWriteIntent = { kind: "createIfAbsent" } | { kind: "replaceIfVersion"; version: unknown };
+/** `fs/observed` 的载荷：确认存在（带版本）或确认不存在 */
+export type FsObservation =
+  | { readonly kind: "present"; readonly version: FsVersion }
+  | { readonly kind: "absent" };
+export type FsWriteIntent = { kind: "createIfAbsent" } | { kind: "replaceIfVersion"; version: FsVersion };
 export interface FsWriteOutcome {
   readonly operation: "create" | "update";
-  readonly version: unknown;
+  readonly version: FsVersion;
   readonly before: string | null;
   readonly after: string;
 }
@@ -163,13 +193,31 @@ export interface SandboxExecutionPolicy {
 }
 
 export interface FileSystemService {
+  /**
+   * 后端是否会强制隔离（未提供 = 不隔离）。
+   * 首方 dsh-tool-fs 用它判断「需要 ctx.sandboxPolicy」；本插件不做升级授权，
+   * 只把会话策略透传给 writeText——见 fsx.ts 的说明。
+   */
+  readonly sandboxMode?: string;
   resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget>;
   processPath(target: FsTarget): string;
+  /** 该目标对应的 file:// URL（未使用，契约对照） */
+  fileUrl(target: FsTarget): string;
   /** child 是否落在 parent 之内（含相等）——用于把 node:fs 写入限制在工作区内 */
   contains(parent: FsTarget, child: FsTarget): boolean;
   stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined>;
+  /** 按主机路径 stat（未使用，契约对照） */
+  lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsInfo | undefined>;
   readText(target: FsTarget, signal?: AbortSignal): Promise<string>;
+  /** 流式读文本（未使用，契约对照） */
+  streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>>;
   readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>;
+  /** 读字节区间（未使用，契约对照） */
+  readByteRange(
+    target: FsTarget,
+    range: { offset: number; length: number },
+    signal?: AbortSignal,
+  ): Promise<Uint8Array>;
   listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]>;
   writeText(
     target: FsTarget,
@@ -178,11 +226,28 @@ export interface FileSystemService {
     signal?: AbortSignal,
     sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsWriteOutcome>;
+  /**
+   * 定点编辑（未使用，契约对照）：要求先观察过该文件，否则报 FS_NOT_OBSERVED。
+   * 本插件写整份文件，所以走 writeText + 自己构造写入意图。
+   */
+  editText(
+    target: FsTarget,
+    edit: { oldText: string; newText: string; replaceAll?: boolean },
+    expected?: { version: FsVersion },
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<{ version: FsVersion }>;
 }
 
 export interface ToolRegistry {
   register(definition: ToolDefinition): () => void;
 }
+
+/** 技能资源根：本插件只产出 `directory` 形态，其余是契约对照 */
+export type SkillResourceBase =
+  | { readonly kind: "directory"; readonly path: string }
+  | { readonly kind: "url"; readonly url: string }
+  | { readonly kind: "opaque"; readonly description: string };
 
 /** 运行时技能注册（rank 250：项目级技能仍可覆盖同名插件技能） */
 export interface SkillRegistration {
@@ -191,7 +256,7 @@ export interface SkillRegistration {
   content: string;
   source: string;
   whenToUse?: string;
-  resourceBase?: { kind: "directory"; path: string };
+  resourceBase?: SkillResourceBase;
   invocation?: { modelInvocable: boolean; userInvocable: boolean };
 }
 export interface SkillRegistryLike {
@@ -205,10 +270,11 @@ export interface CommandDefinition {
   name: string;
   description: string;
   input?: { hint: string; attachments?: boolean };
+  /** 真品的 invocation 另带 commandId 与 attachments；本插件都用不到，只声明用到的成员 */
   handler(invocation: {
     rawInput: string;
     signal: AbortSignal;
-    agent?: { readonly session: { readonly header: { readonly cwd?: string } } };
+    agent?: Agent;
   }): CommandResult | Promise<CommandResult>;
 }
 export interface CommandsService {
@@ -219,6 +285,10 @@ export interface PromptSection {
   name: string;
   order: number;
   text: string | ((context: { scope?: unknown }) => string);
+  /** 段内 `{{var}}` 是否走提示词变量替换（默认 true） */
+  interpolate?: boolean;
+  /** 该段是否为「完整提示词」——置 true 时其余段被丢弃 */
+  complete?: boolean;
 }
 export interface SystemPromptService {
   section(section: PromptSection): () => void;
@@ -247,5 +317,6 @@ export interface Context {
 }
 
 export interface SandboxPolicyService {
-  resolve(request?: { session?: unknown }): SandboxExecutionPolicy;
+  /** 会话的沙箱策略；缺省 request 时给出部署默认（无会话调用走这一支） */
+  resolve(request?: { session?: Session }): SandboxExecutionPolicy;
 }

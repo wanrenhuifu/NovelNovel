@@ -30,9 +30,12 @@ declare module "node:url" {
 }
 
 declare module "node:module" {
-  export function createRequire(anchor: string): {
+  /** `require` 的最小形态：解析裸说明符，或直接读一个文件的导出（如 package.json） */
+  export interface MinimalRequire {
     resolve(specifier: string): string;
-  };
+    (specifier: string): unknown;
+  }
+  export function createRequire(anchor: string): MinimalRequire;
 }
 
 declare const process: {
