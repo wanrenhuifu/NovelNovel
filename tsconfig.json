@@ -6,6 +6,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "moduleDetection": "force",
+    "jsx": "react-jsx",
     "types": [],
     "noEmit": true,
     "skipLibCheck": true,

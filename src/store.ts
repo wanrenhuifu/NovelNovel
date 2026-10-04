@@ -121,6 +121,15 @@ function isDestructiveConfirmed(value: boolean | undefined): boolean {
 export class NovelStore {
   private readonly ops: FsOps;
 
+  /**
+   * 本进程里真正被会话用作工作目录的路径。
+   *
+   * 用途只有一个：Web 面板的 `/api/novel.*` 路由没有会话上下文，cwd 只能由前端告知，
+   * 而「前端说什么就照什么找」等于把任意目录读取开放出去。因此只认这些**工具实际用过**的目录；
+   * 这与 harness 内部结构无关，语义也正好是「面板只能看本会话真在用的工作区」。
+   */
+  private readonly workspaces = new Set<string>();
+
   constructor(
     ctx: Context,
     private readonly config: NovelConfig,
@@ -130,7 +139,9 @@ export class NovelStore {
 
   /** 由工具执行上下文得到文件会话（工作目录 + 取消信号 + 沙箱策略） */
   sessionOf(exec: ToolRunContext): FsSession {
-    return this.ops.sessionOf(exec);
+    const session = this.ops.sessionOf(exec);
+    this.workspaces.add(session.cwd);
+    return session;
   }
 
   /** 由命令处理器等没有 exec 的场景构造文件会话 */
@@ -138,7 +149,29 @@ export class NovelStore {
     session: { readonly header: { readonly cwd?: string } } | undefined,
     signal?: AbortSignal,
   ): FsSession {
-    return this.ops.sessionFor(session, signal);
+    const built = this.ops.sessionFor(session, signal);
+    this.workspaces.add(built.cwd);
+    return built;
+  }
+
+  /**
+   * 解析 Web 面板请求要用的文件会话。
+   *
+   * `cwd` 不传时的语义：本进程只见过一个工作目录就直接用它（前端不必知道路径），
+   * 见过多个则不猜——返回 undefined 由调用方要求前端明确指定，避免写错作品。
+   */
+  workspaceOf(cwd: string | null | undefined): FsSession | undefined {
+    if (cwd === null || cwd === undefined || cwd === "") {
+      const only = this.workspaces.size === 1 ? [...this.workspaces][0] : undefined;
+      return only === undefined ? undefined : this.sessionFor({ header: { cwd: only } });
+    }
+    if (!this.workspaces.has(cwd)) return undefined;
+    return this.sessionFor({ header: { cwd } });
+  }
+
+  /** 已知工作目录清单（供前端在 403 时自助纠正） */
+  knownWorkspaces(): string[] {
+    return [...this.workspaces];
   }
 
   /** 读工作区外的文本文件（预设/卡片导入用），文件不存在即报错 */

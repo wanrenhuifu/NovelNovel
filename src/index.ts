@@ -6,6 +6,7 @@
  * 全部通过 ctx 注册，插件卸载时由 Cordis 自动撤销。
  */
 import type { Context, DefineTool } from "./contract";
+import { registerClientApi } from "./clientApi";
 import { registerNovelCommand } from "./command";
 import { loadHarnessModule } from "./harness";
 import { registerSkills } from "./skills";
@@ -98,6 +99,9 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
   const skillStore = new SkillStore(ctx, config.dataDir);
 
   registerTools({ ctx, store, skillStore, config, defineTool });
+
+  // Web 面板的只读接口；没有 connection 服务（headless/sdk 组合）时自行跳过
+  registerClientApi(ctx, store);
 
   ctx.inject(["skills"], (skillCtx) => {
     void registerSkills(skillCtx).catch((error: unknown) => {

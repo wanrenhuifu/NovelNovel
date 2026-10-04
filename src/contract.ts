@@ -320,3 +320,17 @@ export interface SandboxPolicyService {
   /** 会话的沙箱策略；缺省 request 时给出部署默认（无会话调用走这一支） */
   resolve(request?: { session?: Session }): SandboxExecutionPolicy;
 }
+
+/** `ctx.connection.fetch.register` 的一条路由（path 必须 `/api/<段>`，精确匹配） */
+export interface FetchRoute {
+  path: string;
+  methods: string[];
+  requestBody: "buffered" | "streaming";
+  fetch: (request: Request) => Response | Promise<Response>;
+}
+
+export interface ConnectionService {
+  readonly fetch: {
+    register(route: FetchRoute): () => void;
+  };
+}
