@@ -121,6 +121,7 @@ export function registerClientApi(ctx: Context, store: NovelStore): void {
           active: c.active,
           specVersion: c.specVersion,
           hasAvatar: c.avatar !== null,
+          description: c.description,
         })),
         lorebook: lorebook.map((entry) => ({
           id: entry.id,

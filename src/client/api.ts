@@ -74,6 +74,7 @@ export interface CharacterSummary {
   active: boolean;
   specVersion: string;
   hasAvatar: boolean;
+  description: string;
 }
 
 export interface LoreEntrySummary {
