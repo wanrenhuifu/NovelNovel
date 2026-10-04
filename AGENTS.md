@@ -1,8 +1,12 @@
 # AGENTS.md
 
 DeepSeek Harness (dsh) 插件（npm 包 `dsh-novelnovel`）：把小说写成**工作区里的普通文件**，让 harness 的
-agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出。纯 Node 包——没有 UI、不发模型请求
-（模型由 harness 提供），数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
+agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出。不发模型请求（模型由 harness 提供），
+数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
+
+两个半边：**宿主半边**（Node，工具/技能/命令 + 3 条只读 `/api/novel.*` 路由）与
+**客户端半边**（浏览器，DSH 侧栏的「NovelNovel」写作面板，只读）。客户端半边是可选能力——
+`dsh.client` 是唯一的声明点，但它一旦声明，产物缺失就会**启动即崩**（见「坑」）。
 
 写作方法由技能承载：6 个技能随包注册（rank 250），用户自己的方法用 `novel_skill` 导入到项目根的
 `.dsh/skills/`（rank 100，会覆盖同名内置技能）——那是唯一落在 `<dataDir>` 之外的写入。
@@ -16,7 +20,7 @@ MIT 许可（`LICENSE`）。分发走 `npm pack` 的 tarball（`prepack` 自动�
 ```bash
 npm run build       # esbuild → lib/index.js（lib/ 不入库；改完 src 必须重建，profile 加载的是产物）
 npm run typecheck   # tsc -p .（严格模式，noUnusedLocals/Parameters，零错误才过）
-npm test            # 7 个纯逻辑单测（下面 7 个脚本）
+npm test            # 9 个纯逻辑单测（下面 9 个脚本）
 node scripts/test-card-import.mjs   # 角色卡解析链路（PNG V2 / ccv3 双写 / JSON / V1 / 世界书并入 / 关键词拆分）
 node scripts/test-card-export.mjs   # 角色卡导出往返（编辑后再导出不回退、V1 字段不丢、非 PNG 头像占位、魔数嗅探）
 node scripts/test-preset-import.mjs # 预设导入解析 + story_string 渲染（含空变量报警与 {{char}}）+ 提示词组装 + 截断
@@ -24,8 +28,11 @@ node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/
 node scripts/test-reorder.mjs       # 章节排序：边界/位移/规范化/不可变性
 node scripts/test-skill-pack.mjs    # 技能包解析 + SKILL.md frontmatter 往返 + 项目根祖先链
 node scripts/test-domain-utils.mjs  # 字数统计（标点与扩展 B 汉字）+ 词条关键词匹配（全半角、空白键）
+node scripts/test-client-manifest.mjs # 客户端半边清单：dsh.client 形态 + exports["./client"] + **产物必须存在**
+node scripts/test-client-bundle.mjs   # 客户端产物：包装格式、external 无漏项、slot 注册冒烟
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:dsh                    # 49 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 ```
 
@@ -58,11 +65,20 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
+- `src/clientApi.ts` 宿主侧的 Web 接口：3 条**只读** `/api/novel.*` 路由（作品列表 / 作品详情 /
+  章节正文）。复用 `NovelStore`，不重写领域逻辑；鉴权完全交给 connection 的 fence。
+- `src/client/` **客户端半边**（浏览器）：`index.tsx` 注册 `sidebar.panellist` 图标与 `main` 面板、
+  `panel.tsx` 是只读视图、`state.ts` 是取数与选择状态、`api.ts` 走文档相对路径请求宿主路由、
+  `styles.ts` 注入 CSS（`--dsw-*` token）、`env.d.ts` 补平台模块的类型声明。
+  构建产物 `lib/client.js` 由 `build.client.mjs` 包装（**不是 ESM**，见「坑」）。
 - `tests/verify.mjs` 端到端（49 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
-  （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
-  Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
-  `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
-  `samples/preset-example.json` 供测试导入预设用。
+  （锚点顺序、`registerHarnessHook` 见「坑」）；`tests/verify-client-compose.mjs` 用宿主真实的
+  `ClientModuleRegistry` 验证客户端半边能组合；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
+  Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/verify-client-compose.mjs` /
+  `scripts/probe-dsh-perf.mjs` 是它的三个入口；`scripts/client-platform-modules.mjs` 是
+  external 白名单的**单一来源**（构建与测试共用）；`tests/fixtures/stale-harness.mjs` +
+  `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；`samples/preset-example.json`
+  供测试导入预设用。
 
 ## 约定
 
@@ -91,6 +107,24 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   路由到应用安装，所以新增 `@deepseek-ai/*` 的 import 时**必须同步加进 peerDependencies**，否则会
   落到工作树里那份。
   `@lenml/char-card-reader` 是 AGPL，只做 external + `dependencies`，不打进产物。
+- **客户端半边：声明了就必须有产物，否则启动即崩**（踩过一次，整台机器的前端都打不开）。
+  `package.json` 的 `dsh.client` 是**唯一**声明点，宿主 `ClientModuleRegistry` 构造时会扫每个 loader 行，
+  对声明了 `dsh.client` 的包读 `exports["./client"]` 指向的文件：**读不到就抛
+  `MissingClientBundleError`，聚合成 `ClientPackageCompositionError` 同步抛出** → 注册表不注册 →
+  `/plugins` 路由不存在 → **所有客户端插件（含首方）都加载不出来**。所以：
+  - 产物 `lib/client.js` 由 `build.client.mjs` 生成，`lib/` 不入库，**新克隆必须先 `npm run build`**；
+  - `npm test` 里的 `test-client-manifest.mjs`（清单层，纯 Node）与 `npm run test:compose`
+    （用宿主**真实注册表**验证组合，走 DSH 的 Node）就是为这条设的，改客户端半边后两个都要跑；
+  - 产物的形态是**经典 script**，不是 ESM 也不是 Node CJS 模块：
+    `window.__ModuleLoader__.load({ id: "<包名>", factory: (require) => { var module = {exports:{}}; …; return module.exports } })`，
+    `factory` 只收 `require` 一个参数；
+  - `require` 的说明符必须是外壳**静态模块表**里的精确键（`scripts/client-platform-modules.mjs`
+    是唯一来源），写成 `"…/client"` 之类的子路径会在**浏览器 console** 报
+    `missed the module table`——服务端完全看不到这条错误，所以它由 `test-client-bundle.mjs` 兜住；
+  - `platform` 不是 `"web"` 会被**静默**当成非客户端包（无报错、页面里也没有），最难查的一种；
+  - 组合与 bundle 清单是**增量扫描**（只在 fiber 构建/销毁时重扫，没有全量重扫路径）：新装包或
+    首次补上产物后**必须重启应用**，之后改产物才走 HMR；而本机没有跑 `pnpm run dev:web`，
+    所以 HMR 也不会重建产物——**每次改客户端代码都要 `npm run build`，再重启应用**。
 - **工具参数名就是 schema 键**：`defineTool` 的 `args` 类型由 `parameters` 推导（`contract.ts` 的
   `InferArgs`），schema 里写 `author_note`/`prev_chapters` 这类 snake_case，代码里就必须同名访问
   ——改 schema 键名不改进代码会直接 tsc 报错（有意的防漂移，别用 `any` 绕）。
@@ -211,7 +245,11 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 - **`action=write` 覆盖正文没有历史**：`append` 是常规路径，`write` 是整体替换，目前没有快照。
 - **list/search 的最终上限**：`novel_chapter action=list` 逐章读全文并渲染预览，几千章时既慢又占上下文
   （`resolveProjectId` 那条路径已经只读元数据，但列表本身没有 `limit`）。
-- **没有桌面端 UI**：插件的用户面只有工具返回的文本；桌面端有 sidebar slot 可以放只读面板。
+- **面板只读**：`src/client/` 的写作面板不做写入——写要与模型抢同一份稿子，得先设计冲突 UX
+  并复用 CAS 语义，留到第二期。
+- **面板还不知道「当前工作区」**：HTTP 路由没有会话上下文，所以工作目录靠 `NovelStore` 记录的
+  「工具真正用过的目录」当白名单，单工作区时自动解析。多工作区且工具尚未跑过时面板只能提示
+  用户先调用任意 `novel_*` 工具（见 `unknown_workspace` 那条 403 与 `state.ts` 的文案）。
 - **从未跑过真实模型会话**：全部验证都在工具层，不调模型——技能路由、简报实际 token 量、
   模型会不会滥用 `action=write` 都还没有证据。
 

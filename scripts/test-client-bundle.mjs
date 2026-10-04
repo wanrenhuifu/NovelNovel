@@ -9,28 +9,35 @@
  *     验证两个 slot 都注册了、sidebar 的 id 与 main 的 key 一致、组件能渲染。
  *
  * 这里**测不到**、必须在真实浏览器里看的：外观、交互、fetch 是否被 connection 的 fence 放行。
+ * 清单层面的判定（`dsh.client` 声明、`exports["./client"]`、产物路径）见 test-client-manifest.mjs。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename } from "node:path";
 import vm from "node:vm";
+import { PLATFORM_MODULES } from "./client-platform-modules.mjs";
 
 const bundlePath = fileURLToPath(new URL("../lib/client.js", import.meta.url));
+
+// 门禁：产物缺失时给修法，而不是一句 ENOENT。
+// 这不是友好提示——`dsh.client` 声明 + 产物缺失会让宿主在启动时**同步抛出**
+// （client-modules: client bundle not found），整个前端（含首方插件）都加载不出来。
+if (!existsSync(bundlePath)) {
+  console.error(
+    [
+      "✗ 缺少客户端产物 lib/client.js。",
+      "",
+      "  本包声明了 dsh.client（客户端半边），宿主启动时会读取该产物：读不到会抛",
+      "  `client-modules: client bundle not found`，并导致整个前端无法加载。先构建：",
+      "",
+      "    npm run build",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+
 const code = readFileSync(bundlePath, "utf8");
 const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
-
-/** 外壳的静态模块表（实测自 dsh-web-frontend 入口产物的 rM()）；与 build.client.mjs 保持一致 */
-const PLATFORM_MODULES = [
-  "react",
-  "react/jsx-runtime",
-  "react-dom",
-  "react-dom/client",
-  "@deepseek-ai/cordis",
-  "@deepseek-ai/dsh-client-store",
-  "@deepseek-ai/dsh-client-ui-slots",
-  "@deepseek-ai/dsh-client-ui-primitives",
-  "@deepseek-ai/dsh-client-ui-dockkit",
-];
 
 const checks = [];
 const check = (name, ok, detail) => checks.push({ name, ok, detail: ok ? undefined : detail });

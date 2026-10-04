@@ -13,26 +13,15 @@
 //
 // external 只能是外壳**静态模块表**（PLATFORM_MODULES）里的精确键——命中即由外壳提供，
 // 既不打进产物、也不需要任何声明。其余一律 inline。多写一个或漏掉一个，运行时会在
-// 浏览器 console 报 `missed the module table`（服务端看不到），所以只列实测过的键。
+// 浏览器 console 报 `missed the module table`（服务端看不到）。
+// 那份清单的唯一来源是 scripts/client-platform-modules.mjs（测试也读它）。
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { PLATFORM_MODULES } from "./scripts/client-platform-modules.mjs";
 
 const packageDir = fileURLToPath(new URL(".", import.meta.url));
 const pkg = JSON.parse(readFileSync(new URL("package.json", import.meta.url), "utf8"));
-
-/** 外壳的静态模块表（实测自 dsh-web-frontend 入口产物的 rM()） */
-const PLATFORM_MODULES = [
-  "react",
-  "react/jsx-runtime",
-  "react-dom",
-  "react-dom/client",
-  "@deepseek-ai/cordis",
-  "@deepseek-ai/dsh-client-store",
-  "@deepseek-ai/dsh-client-ui-slots",
-  "@deepseek-ai/dsh-client-ui-primitives",
-  "@deepseek-ai/dsh-client-ui-dockkit",
-];
 
 export async function buildClient() {
   await build({
