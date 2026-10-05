@@ -54,7 +54,8 @@ export function registerCharacterTool({ ctx, store, defineTool }: ToolDeps): voi
         const projectId = await store.resolveProjectId(session, args.project);
 
         if (args.action === "list") {
-          const characters = await store.listCharacters(session, projectId);
+          const diagnosed = await store.listCharactersDiagnosed(session, projectId);
+          const characters = diagnosed.characters;
           const summary = lines(
             characters.length === 0
               ? "No character card yet. Import one with novel_character action=import path=<card.png>."
@@ -66,6 +67,16 @@ export function registerCharacterTool({ ctx, store, defineTool }: ToolDeps): voi
                 `  ${preview(character.description, 80) || "(no description)"}`,
               ),
             ),
+            // 坏卡片与孤儿头像都点名：静默跳过会表现为"卡明明在、工具说没有"，
+            // 或者"characters/ 目录里有东西但列表是空的"
+            ...diagnosed.broken.map((item) => `⚠️ ${item.file} could not be read: ${item.error}`),
+            ...(diagnosed.orphanAvatars.length > 0
+              ? [
+                  `⚠️ ${String(diagnosed.orphanAvatars.length)} avatar file(s) have no matching card ` +
+                    `(left over from an interrupted import): ${diagnosed.orphanAvatars.join(", ")}. ` +
+                    "They are not shown as cards; delete them to tidy up.",
+                ]
+              : []),
           );
           return {
             action: args.action,
@@ -78,6 +89,12 @@ export function registerCharacterTool({ ctx, store, defineTool }: ToolDeps): voi
                 spec: character.specVersion,
                 active: character.active,
               })),
+              ...(diagnosed.broken.length > 0
+                ? { cards_unreadable: diagnosed.broken.map((item) => ({ file: item.file, error: item.error })) }
+                : {}),
+              ...(diagnosed.orphanAvatars.length > 0
+                ? { orphan_avatars: diagnosed.orphanAvatars }
+                : {}),
             },
           };
         }

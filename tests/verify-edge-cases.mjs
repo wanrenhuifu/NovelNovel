@@ -287,6 +287,39 @@ console.log("--- 技能文件解析失败要点名 ---");
   );
 }
 
+// ── 孤儿头像要点名（有头像、没有卡片）────────────────────────────
+// `importCharacter` 的顺序是「写头像（node:fs，不受取消约束）→ 写卡片 → 合并词条」，
+// 在头像之后、卡片之前被取消就留下它。读路径只扫 `*.json`，所以它既不显示也不清理——
+// 同一类"读不出来当没有"的第五处。
+console.log("--- 孤儿头像要点名 ---");
+{
+  // 独立作品 + **显式传 project**：不带 project 时工具解析的是"当前作品"，而前面几个 create
+  // 已经把当前作品改掉了——我第一版就是这么写错的（我看 A 作品的目录、工具读的是 B 作品）。
+  const orphanProject = await call("novel_project", { action: "create", title: "孤儿头像" });
+  const orphanPid = orphanProject.r.details.project_id;
+  const orphanDir = join(workspace, ".novelnovel", "projects", orphanPid, "characters");
+  mkdirSync(orphanDir, { recursive: true });
+  writeFileSync(join(orphanDir, "abcdef0123.png"), "not really a png", "utf8");
+
+  const listed = await call("novel_character", { action: "list", project: orphanPid });
+  check("角色卡列表仍能返回", listed.ok, listed.ok ? "" : listed.error);
+  check(
+    "列表点名没有卡片的头像文件",
+    listed.ok && /avatar file\(s\) have no matching card/i.test(listed.r.summary),
+    listed.ok ? "" : listed.error,
+  );
+  check(
+    "details 里给出孤儿头像（可编程判据）",
+    listed.ok && (listed.r.details.orphan_avatars ?? []).includes("abcdef0123.png"),
+    listed.ok ? JSON.stringify(listed.r.details.orphan_avatars) : listed.error,
+  );
+  check(
+    "孤儿头像不被当成角色卡",
+    listed.ok && !(listed.r.details.characters ?? []).some((c) => c.id === "abcdef0123"),
+    listed.ok ? JSON.stringify((listed.r.details.characters ?? []).map((c) => c.id)) : listed.error,
+  );
+}
+
 rmSync(workspace, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "全部通过" : `${String(failed)} 项失败`}：${String(passed + failed)} 项检查`);
 process.exit(failed === 0 ? 0 : 1);

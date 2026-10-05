@@ -1411,6 +1411,14 @@ export class NovelStore {
   ): Promise<{
     characters: StoredCharacter[];
     broken: { file: string; error: string }[];
+    /**
+     * 有头像文件、却没有同名 `.json` 卡片的**孤儿**。
+     *
+     * `importCharacter` 的顺序是「写头像（node:fs，不受沙箱与取消约束）→ 写卡片 → 合并词条」，
+     * 在头像之后、卡片之前被取消就会留下它。读路径只扫 `*.json`，所以这种头像**既不显示、
+     * 也不清理**——同一个残骸还会让 `characters/` 目录看起来像坏了。点名它，用户才知道能删。
+     */
+    orphanAvatars: string[];
     /** 每个角色卡文件的读取版本，供「读-改-写」当 CAS 基准（键为文件名） */
     bases: Map<string, VersionBasis>;
   }> {
@@ -1419,8 +1427,10 @@ export class NovelStore {
     const characters: StoredCharacter[] = [];
     const broken: { file: string; error: string }[] = [];
     const bases = new Map<string, VersionBasis>();
+    const cardIds = new Set<string>();
     for (const entry of entries) {
       if (entry.type !== "file" || !entry.name.endsWith(".json")) continue;
+      cardIds.add(entry.name.slice(0, -".json".length));
       const read = await this.ops.readJsonOrDiagnose<StoredCharacter>(
         `${dir}/${entry.name}`,
         session,
@@ -1432,9 +1442,18 @@ export class NovelStore {
       bases.set(entry.name, read.basis);
       if (read.value) characters.push(read.value);
     }
+    const orphanAvatars = entries
+      .filter((entry) => {
+        if (entry.type !== "file" || entry.name.endsWith(".json")) return false;
+        // 头像按 `<id>.<媒体类型扩展名>` 命名，取 id 段比对
+        const dot = entry.name.lastIndexOf(".");
+        return dot > 0 && !cardIds.has(entry.name.slice(0, dot));
+      })
+      .map((entry) => entry.name);
     return {
       characters: characters.sort((a, b) => a.createdAt - b.createdAt),
       broken,
+      orphanAvatars,
       bases,
     };
   }
