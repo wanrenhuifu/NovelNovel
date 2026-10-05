@@ -118,17 +118,61 @@ function isDestructiveConfirmed(value: boolean | undefined): boolean {
   return value === true;
 }
 
+/**
+ * 章节 id 的安全字符集。
+ *
+ * 为什么必须有这道闸：id 会被直接当路径段拼进 `<dataDir>/projects/<pid>/chapters/<id>.md`。
+ * 索引是**给人手改的普通文件**，把某条改成 `{"id":"../../other-novel/abc"}`，
+ * 就能读到另一个作品的正文、甚至工作区外任意 `*.md`（后缀固定追加 `.md`）；
+ * 同一个 id 还会流进 `deleteChapter` / 写正文——`assertInsideWorkspace` 只挡工作区**外**，
+ * `../other-novel/x` 落在工作区内，会真的删掉别的作品。
+ *
+ * 生成 id 是 `uid().replace(/-/g,"").slice(0,10)`（小写十六进制），所以这个集合足够宽。
+ */
+const CHAPTER_ID_PATTERN = /^[A-Za-z0-9_$.-]+$/;
+
+function isValidChapterId(id: unknown): id is string {
+  return typeof id === "string" && id !== "." && id !== ".." && CHAPTER_ID_PATTERN.test(id);
+}
+
+/**
+ * 索引里不合规的条目直接**丢掉**，只留合规的。
+ *
+ * 选择丢而不是整份报错：索引是给人手改的，一条写坏不该让整本书打不开；
+ * 而放行这条路是真实的安全问题（见上）。被丢掉的条目会在读取时报出来。
+ */
+function sanitizeChapterIndex(index: ChapterIndex): ChapterIndex {
+  if (!Array.isArray(index.items)) return { ...index, items: [] };
+  const kept: ChapterMeta[] = [];
+  const dropped: string[] = [];
+  for (const item of index.items) {
+    if (isValidChapterId(item?.id)) kept.push(item);
+    else dropped.push(typeof item?.id === "string" ? item.id : String(item?.title ?? "?"));
+  }
+  if (dropped.length > 0) {
+    throw new Error(
+      `chapters/index.json contains ${String(dropped.length)} entry(ies) whose id cannot be used as a file name: ` +
+        `${dropped.map((d) => JSON.stringify(d)).join(", ")}. ` +
+        "Ids must match ^[A-Za-z0-9_$.-]+$ (and not be \".\" or \"..\"); fix the index before reading this project.",
+    );
+  }
+  return { ...index, items: kept };
+}
+
 export class NovelStore {
   private readonly ops: FsOps;
 
   /**
-   * 本进程里真正被会话用作工作目录的路径。
+   * 本进程里会话真正用过的工作目录 → **那个会话的真品**。
    *
-   * 用途只有一个：Web 面板的 `/api/novel.*` 路由没有会话上下文，cwd 只能由前端告知，
-   * 而「前端说什么就照什么找」等于把任意目录读取开放出去。因此只认这些**工具实际用过**的目录；
-   * 这与 harness 内部结构无关，语义也正好是「面板只能看本会话真在用的工作区」。
+   * 用途：Web 面板的 `/api/novel.*` 路由没有会话上下文，cwd 只能由前端告知，
+   * 而「前端说什么就照什么找」等于把任意目录读取开放出去，所以只认这里记录过的目录。
+   *
+   * 存 Session **真品**而不是 cwd 字符串：`ctx.sandboxPolicy.resolve({ session })` 会去读
+   * 会话的 projection（`session.snapshotEvents()`），喂一个 `{ header: { cwd } }` 的伪造对象
+   * 会直接抛 `TypeError: session.snapshotEvents is not a function`——三条路由会全部 500/400。
    */
-  private readonly workspaces = new Set<string>();
+  private readonly workspaces = new Map<string, { readonly header: { readonly cwd?: string } }>();
 
   constructor(
     ctx: Context,
@@ -140,7 +184,7 @@ export class NovelStore {
   /** 由工具执行上下文得到文件会话（工作目录 + 取消信号 + 沙箱策略） */
   sessionOf(exec: ToolRunContext): FsSession {
     const session = this.ops.sessionOf(exec);
-    this.workspaces.add(session.cwd);
+    this.remember(session.cwd, exec.agent?.session);
     return session;
   }
 
@@ -150,28 +194,47 @@ export class NovelStore {
     signal?: AbortSignal,
   ): FsSession {
     const built = this.ops.sessionFor(session, signal);
-    this.workspaces.add(built.cwd);
+    this.remember(built.cwd, session);
     return built;
+  }
+
+  /**
+   * 记下「这个工作目录被哪个会话用过」。
+   *
+   * 只在**真有 Session** 时记：`sessionFor(undefined)` 会兜底到 `process.cwd()`，
+   * 那条不该进白名单（否则面板可能去读一个没有任何会话用过的工作区，
+   * 或把「单工作区自动解析」打掉变成 403）。
+   */
+  private remember(cwd: string, session: { readonly header: { readonly cwd?: string } } | undefined): void {
+    if (session === undefined || session.header.cwd === undefined) return;
+    this.workspaces.set(cwd, session);
   }
 
   /**
    * 解析 Web 面板请求要用的文件会话。
    *
+   * 复用**当初记下的那个真 Session**（沙箱策略要读它的 projection，伪造不出来）。
    * `cwd` 不传时的语义：本进程只见过一个工作目录就直接用它（前端不必知道路径），
    * 见过多个则不猜——返回 undefined 由调用方要求前端明确指定，避免写错作品。
    */
   workspaceOf(cwd: string | null | undefined): FsSession | undefined {
-    if (cwd === null || cwd === undefined || cwd === "") {
-      const only = this.workspaces.size === 1 ? [...this.workspaces][0] : undefined;
-      return only === undefined ? undefined : this.sessionFor({ header: { cwd: only } });
-    }
-    if (!this.workspaces.has(cwd)) return undefined;
-    return this.sessionFor({ header: { cwd } });
+    const key =
+      cwd === null || cwd === undefined || cwd === ""
+        ? this.workspaces.size === 1
+          ? [...this.workspaces.keys()][0]
+          : undefined
+        : this.workspaces.has(cwd)
+          ? cwd
+          : undefined;
+    if (key === undefined) return undefined;
+    const session = this.workspaces.get(key);
+    if (session === undefined) return undefined;
+    return this.ops.sessionFor(session);
   }
 
   /** 已知工作目录清单（供前端在 403 时自助纠正） */
   knownWorkspaces(): string[] {
-    return [...this.workspaces];
+    return [...this.workspaces.keys()];
   }
 
   /** 读工作区外的文本文件（预设/卡片导入用），文件不存在即报错 */
@@ -921,7 +984,7 @@ export class NovelStore {
       this.chapterIndexFile(projectId),
       session,
     );
-    return { index: value ?? { items: [] }, basis };
+    return { index: sanitizeChapterIndex(value ?? { items: [] }), basis };
   }
 
   private async readChapterIndex(session: FsSession, projectId: string): Promise<ChapterIndex> {
@@ -1030,8 +1093,15 @@ export class NovelStore {
 
   async readChapter(session: FsSession, projectId: string, ref: string): Promise<Chapter> {
     const meta = await this.resolveChapterId(session, projectId, ref);
-    const content =
-      (await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session)) ?? "";
+    const content = await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session);
+    if (content === null) {
+      // 索引里说有这么一章，正文文件却不在：这跟"空章"是两回事。
+      // 静默返回空串会把「正文被删了」伪装成「这章还没写」，用户会以为内容丢了却查不出原因。
+      throw new Error(
+        `chapter "${meta.title}" [${meta.id}] is listed in chapters/index.json but its body file is missing ` +
+          `(expected ${this.chapterFile(projectId, meta.id)}). The file was deleted or moved outside the plugin.`,
+      );
+    }
     return { ...meta, content, words: countWords(content) };
   }
 

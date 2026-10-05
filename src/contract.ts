@@ -321,16 +321,27 @@ export interface SandboxPolicyService {
   resolve(request?: { session?: Session }): SandboxExecutionPolicy;
 }
 
-/** `ctx.connection.fetch.register` 的一条路由（path 必须 `/api/<段>`，精确匹配） */
+/**
+ * `ctx.connection.fetch.register` 的一条路由（path 必须 `/api/<段>`，精确匹配）。
+ *
+ * 三处按真品抄写，别放宽：
+ * - `methods` 是**大写**的联合类型。写成 `string[]` 的话 `["get"]` 能过 tsc，
+ *   但 connection 用大写精确匹配（`route.methods.has(request.method)`），
+ *   路由会永远 404，且 `requestBody` 退化成默认值——这种错没有任何报错。
+ * - `fetch` 必须返回 Promise（真品签名如此）。
+ * - `register` 返回的 disposer 在真品里是 `() => Promise<void>`。
+ */
+export type ConnectionFetchMethod = "GET" | "HEAD" | "POST";
+
 export interface FetchRoute {
   path: string;
-  methods: string[];
+  methods: readonly ConnectionFetchMethod[];
   requestBody: "buffered" | "streaming";
-  fetch: (request: Request) => Response | Promise<Response>;
+  fetch: (request: Request) => Promise<Response>;
 }
 
 export interface ConnectionService {
   readonly fetch: {
-    register(route: FetchRoute): () => void;
+    register(route: FetchRoute): () => Promise<void>;
   };
 }

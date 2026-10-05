@@ -138,23 +138,52 @@ const sandbox = {
   clearTimeout,
   URL,
   fetch: () => Promise.reject(new Error("smoke test does not fetch")),
-  __ctx: ctxStub,
 };
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-vm.runInContext("var ctx = __ctx;", sandbox);
+// 刻意**不注入全局 ctx**：真实外壳从不定义它（bootInjections 只给 __ModuleLoader__ 与
+// __DSH_BOOT__）。以前这里补了一个，正好把"顶层引用全局 ctx"这个致命缺陷遮住了。
 vm.runInContext(code, sandbox, { filename: basename(bundlePath) });
 
 check("调用了 __ModuleLoader__.load", loaded !== null);
 check("factory 是函数", typeof loaded?.factory === "function");
+
+/**
+ * 最关键的一条：外壳把 factory 的返回值交给 cordis Loader，后者要求
+ * 「函数，或带 apply 方法的对象」，否则抛
+ * `invalid plugin, expect function or object with an "apply" method`。
+ * 空对象意味着插件在浏览器里**根本装不上**——这正是曾经线上从没出现过面板的原因。
+ */
+let mod = null;
 if (typeof loaded?.factory === "function") {
   try {
-    loaded.factory(requireStub);
+    mod = loaded.factory(requireStub);
     check("factory 可物化", true);
   } catch (error) {
     check("factory 可物化", false, String(error.message));
   }
 }
+check(
+  "factory 返回值是带 apply 的对象（cordis 插件形态）",
+  mod !== null && typeof mod === "object" && typeof mod.apply === "function",
+  mod === null ? "factory 没返回东西" : `keys=[${Object.keys(mod).join(", ")}]`,
+);
+check(
+  "导出了 inject 声明需要 slots",
+  Array.isArray(mod?.inject) && mod.inject.includes("slots"),
+  JSON.stringify(mod?.inject),
+);
+
+// 真正调用 apply（外壳就是这么做的），注册行为必须发生在这里
+if (typeof mod?.apply === "function") {
+  try {
+    mod.apply(ctxStub);
+    check("apply(ctx) 可执行", true);
+  } catch (error) {
+    check("apply(ctx) 可执行", false, String(error.message));
+  }
+}
+
 check("require 无漏项", missing.length === 0, missing.join(", "));
 check("注入了样式", head.length === 1);
 check("注册了 sidebar.panellist", injectedKeys.includes("sidebar.panellist"), injectedKeys.join(", "));

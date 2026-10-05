@@ -28,7 +28,11 @@ export async function buildClient() {
     entryPoints: [fileURLToPath(new URL("src/client/index.tsx", import.meta.url))],
     outfile: fileURLToPath(new URL("lib/client.js", import.meta.url)),
     bundle: true,
-    format: "iife",
+    // 必须是 cjs：只有 cjs 形态的产出才会写 `module.exports = __toCommonJS(...)`。
+    // 用 iife 的话 esbuild 只在有 globalName 时才赋值，我们这种"由外壳装载"的用法
+    // 拿到的会是 banner 里那个空对象 → cordis Loader 报
+    // `invalid plugin, expect function or object with an "apply" method`。
+    format: "cjs",
     platform: "browser",
     target: "es2022",
     jsx: "automatic",
@@ -37,7 +41,15 @@ export async function buildClient() {
     logLevel: "info",
     absWorkingDir: packageDir,
     banner: {
-      js: `window.__ModuleLoader__.load({\n\tid: ${JSON.stringify(pkg.name)},\n\tfactory: (require) => {\n\t\tvar module = { exports: {} };`,
+      // 对齐首方形态：`exports` 必须指向 module.exports，否则 cjs 产出里的
+      // `exports.apply = …` 写丢了，factory 返回的还是空对象。
+      js:
+        `window.__ModuleLoader__.load({\n` +
+        `\tid: ${JSON.stringify(pkg.name)},\n` +
+        `\tfactory: (require) => {\n` +
+        `\t\tvar module = { exports: {} };\n` +
+        `\t\tvar exports = module.exports;\n` +
+        `\t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });`,
     },
     footer: { js: "\t\treturn module.exports;\n\t}\n});" },
   });

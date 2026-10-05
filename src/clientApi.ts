@@ -30,11 +30,50 @@ function failure(code: string, message: string, status = 400, extra?: unknown): 
   return json({ error: { code, message, ...(extra === undefined ? {} : { extra }) } }, status);
 }
 
-/** 把异常翻成 JSON：前端只认 JSON，HTML 错误页会让它解析失败 */
-function fromError(error: unknown): Response {
+/**
+ * 把异常翻成 JSON。
+ *
+ * 状态码**不靠 message 正则**：那会把「两个章节都叫序，请指明哪一个」这类
+ * 用户可自行纠正的情况报成 500，也会把 fs 文案里带 "not found" 的误判成 404。
+ * store 侧抛的错误带 `code`（`NN_*`）时按 code 映射；没有 code 的才落到 500，
+ * 并且 5xx 只回固定文案——内部错误信息里可能带绝对路径。
+ */
+const CODE_STATUS: Record<string, { status: number; code: string }> = {
+  NN_NOT_FOUND: { status: 404, code: "not_found" },
+  NN_AMBIGUOUS: { status: 409, code: "ambiguous" },
+  NN_NEEDS_PROJECT: { status: 400, code: "needs_project" },
+  NN_NO_CHAPTERS: { status: 404, code: "no_chapters" },
+  NN_BAD_INDEX: { status: 422, code: "bad_index" },
+  NN_STALE_VERSION: { status: 409, code: "stale" },
+};
+
+/** 把 store 的错误标记成可映射的 code（改 store 抛点时可逐步替换正则兜底） */
+export function errorCodeOf(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function fromError(ctx: Context, error: unknown): Response {
   const message = error instanceof Error ? error.message : String(error);
-  if (/not found/i.test(message)) return failure("not_found", message, 404);
-  return failure("internal_error", message, 500);
+  const code = errorCodeOf(error);
+  const mapped = code === undefined ? undefined : CODE_STATUS[code];
+  if (mapped !== undefined) return failure(mapped.code, message, mapped.status);
+
+  // 兼容尚未带 code 的既有错误：只认最强的几条特征，不做宽泛正则
+  if (/^project ".+" not found/.test(message)) return failure("not_found", message, 404);
+  if (/has no chapters yet/.test(message)) return failure("no_chapters", message, 404);
+  if (/is ambiguous:/.test(message)) return failure("ambiguous", message, 409);
+  if (/pass project=<id> explicitly/.test(message)) return failure("needs_project", message, 400);
+  if (/id cannot be used as a file name/.test(message)) return failure("bad_index", message, 422);
+
+  // 其余一律 500，且只回固定文案——原文可能带工作区绝对路径
+  ctx.logger.warn(`novelnovel: /api/novel.* failed: ${message}`);
+  return failure(
+    "internal_error",
+    "the request failed inside the plugin; see the host log for details (reason logged with prefix \"novelnovel:\")",
+    500,
+  );
 }
 
 export function registerClientApi(ctx: Context, store: NovelStore): void {
@@ -50,13 +89,14 @@ export function registerClientApi(ctx: Context, store: NovelStore): void {
     const cwd = new URL(request.url).searchParams.get("cwd");
     const session = store.workspaceOf(cwd);
     if (session === undefined) {
+      // 不回已知工作目录的绝对路径：前端不用它（单工作区时宿主已自动解析），
+      // 回给浏览器只是多一处暴露面
       return failure(
         "unknown_workspace",
         cwd
           ? "this workspace is not in use by the current session"
-          : "no workspace yet: run any novel_* tool first, or pass ?cwd=",
+          : "no workspace yet: run any novel_* tool in a session first",
         403,
-        { known: store.knownWorkspaces() },
       );
     }
     return session;
@@ -68,12 +108,15 @@ export function registerClientApi(ctx: Context, store: NovelStore): void {
       methods: ["GET"],
       requestBody: "buffered",
       fetch: async (request) => {
-        const session = resolveSession(request);
-        if (session instanceof Response) return session;
+        // 解析会话也要在 try 里：它一旦抛错（例如沙箱策略读不到会话 projection），
+        // 异常会逃出 fetch → 连接层无 catch → webserver 兜底成**空 body 400**，
+        // 前端只能看到 "request failed with 400"，拿不到任何原因。
         try {
+          const session = resolveSession(request);
+          if (session instanceof Response) return session;
           return await handler(request, session);
         } catch (error) {
-          return fromError(error);
+          return fromError(ctx, error);
         }
       },
     });

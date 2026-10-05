@@ -51,6 +51,8 @@
     "test:compose": "node scripts/verify-client-compose.mjs",
     "test:primitives": "node scripts/verify-client-primitives.mjs",
     "test:tokens": "node scripts/verify-client-tokens.mjs",
+    "test:sandbox": "node scripts/verify-sandbox-session.mjs",
+    "test:chapter-guard": "node scripts/verify-chapter-id-guard.mjs",
     "test:perf": "node scripts/probe-dsh-perf.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm test && npm run typecheck"
