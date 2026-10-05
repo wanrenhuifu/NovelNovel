@@ -56,6 +56,27 @@ export function usePanel(): { state: PanelState; actions: PanelActions } {
   return React.useContext<{ state: PanelState; actions: PanelActions }>(PanelContext);
 }
 
+/** 渲染路径需要的那部分客户端上下文（只有 `on`，不持有整个 ctx） */
+export interface ClientOps {
+  on(event: "connection/reset", listener: () => void): () => void;
+}
+
+/**
+ * 客户端半边的事件上下文：由 `apply(ctx)` 交进来（`attachClientOps`）。
+ *
+ * **为什么要有这个模块级变量**：客户端产物是浏览器里的经典 script，外壳**不提供全局 `ctx`**
+ * （只注入 `window.__ModuleLoader__` 与 `window.__DSH_BOOT__`）。所以渲染路径里任何裸 `ctx` 都会在
+ * 浏览器里抛 `ReferenceError: ctx is not defined`，被首方错误边界接走 → **面板一片空白**。
+ * 实测踩过：`ctx.on("connection/reset")` 写在一个 `useEffect` 里，静态检查与 Node 侧测试都发现不了
+ * （Node 的模块作用域里恰好没有 `ctx`，也不报错）。现在由 `npm run test:bundle-runs` 守着。
+ */
+let clientOps: ClientOps | undefined;
+
+/** `apply(ctx)` 调用一次，把渲染路径需要的能力存下来 */
+export function attachClientOps(ops: ClientOps): void {
+  clientOps = ops;
+}
+
 export function usePanelStore(): { state: PanelState; actions: PanelActions } {
   const [state, setState] = React.useState<PanelState>(INITIAL);
   /** 整份取数（作品→详情→首章）的版本号 */
@@ -144,8 +165,13 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
 
   // 重连后一律失效：WebSocket 断开重连（或宿主重启）时，页面上留的是旧数据，
   // 而此刻用户最需要的恰恰是自动重取。事件由首方的 connection 在 onConnected 时发出。
+  //
+  // 这里**必须走 clientOps**，不能写裸 `ctx`：浏览器里没有全局 ctx，那样会在渲染时抛
+  // ReferenceError 并被错误边界接走（面板一片空白）。见文件顶部 clientOps 的说明。
   React.useEffect(() => {
-    const off = ctx.on("connection/reset", () => {
+    const ops = clientOps;
+    if (ops === undefined) return undefined;
+    const off = ops.on("connection/reset", () => {
       load();
     });
     return () => {

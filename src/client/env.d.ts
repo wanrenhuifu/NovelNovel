@@ -57,4 +57,17 @@ declare interface ClientContext {
   effect(callback: () => void | (() => void), label?: string): () => void;
 }
 
-declare const ctx: ClientContext;
+/**
+ * **这里刻意没有 `declare const ctx`。**
+ *
+ * 曾经有，而那是本次最贵的一个 bug 的成因：它让 `tsc` 对渲染路径里的裸 `ctx` **完全沉默**，
+ * 于是 `state.ts` 一个 `useEffect` 里的 `ctx.on("connection/reset", …)` 顺利通过类型检查、
+ * 通过 Node 侧测试，然后在浏览器里抛 `ReferenceError: ctx is not defined` ——
+ * 整棵 React 树被首方错误边界接走，**面板一片空白**（宿主半边一切正常，极难归因）。
+ *
+ * 客户端产物是**经典 script**，外壳只注入 `window.__ModuleLoader__` 与 `window.__DSH_BOOT__`，
+ * **不提供全局 ctx**。ctx 只能由 `apply(ctx)` 传入，需要跨渲染路径用的能力要显式交出去
+ * （见 `state.ts` 的 `attachClientOps`）。
+ *
+ * 所以：不要把它加回来。没有这条声明，裸 `ctx` 就是编译错误——这才是我们想要的护栏。
+ */

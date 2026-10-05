@@ -16,10 +16,10 @@
  * - `ctx` 只能由 `apply(ctx)` 传入，**顶层不许引用**；
  * - 必须 `export const inject` 声明依赖的服务（`slots` 由 ui-renderer 提供）。
  */
-import type { ReactNode } from "react";
+import { Component, type ReactNode } from "react";
 import { IconListPenOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { NovelPanel } from "./panel";
-import { PanelContext, usePanelStore } from "./state";
+import { attachClientOps, PanelContext, usePanelStore } from "./state";
 import { installStyles } from "./styles";
 
 /** 侧栏条目 id，必须与 main 的 key 一致——这是两者唯一的联系 */
@@ -34,18 +34,65 @@ function NovelIcon(): ReactNode {
   return <IconListPenOutlineRegular size={16} />;
 }
 
+/**
+ * 面板的错误边界。
+ *
+ * 为什么必须有：首方错误边界接住异常后，用户看到的是**一片空白**——没有文字、没有提示，
+ * 而且宿主半边一切正常，所以完全无从归因（这个失败形态真的发生过：渲染路径里一个裸 `ctx`
+ * 抛 `ReferenceError`，面板空白，查了很久才发现）。
+ * 有了它，任何渲染异常都变成面板里一段可读的话。
+ */
+class PanelBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  render(): ReactNode {
+    if (this.state.error !== null) {
+      return (
+        <div className="nnv-root">
+          <header className="nnv-header">
+            <span className="nnv-brand">
+              <span className="nnv-title">NovelNovel</span>
+            </span>
+          </header>
+          <div className="nnv-error">
+            面板渲染出错：{this.state.error.message}
+            <br />
+            请把这句话连同控制台的报错一起反馈；数据本身没有被动过。
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /** 把 store 与 Context 一起挂到面板上；store 只在这一层创建 */
 function NovelPanelRoot(): ReactNode {
   const store = usePanelStore();
   return (
     <PanelContext.Provider value={store}>
-      <NovelPanel />
+      <PanelBoundary>
+        <NovelPanel />
+      </PanelBoundary>
     </PanelContext.Provider>
   );
 }
 
 export function apply(ctx: ClientContext): void {
   installStyles();
+
+  // 把渲染路径需要的能力（事件订阅）显式交给 state：**渲染路径不能引用裸 `ctx`**，
+  // 浏览器里没有这个全局（曾经因此整块面板渲染时报 ReferenceError → 一片空白）。
+  attachClientOps({
+    on: (event, listener) => ctx.on(event, listener),
+  });
 
   ctx.slots.inject("sidebar.panellist", () =>
     ctx.slots.register(
