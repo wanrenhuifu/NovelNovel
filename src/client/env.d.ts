@@ -10,6 +10,11 @@
  * 改前必读：`import` 的说明符必须是**精确的平台键**。写
  * `"@deepseek-ai/dsh-client-ui-primitives/client"` 会在运行时抛
  * `missed the module table`（浏览器 console 可见，服务端看不到）。
+ *
+ * 更狠的一条：**导出的名字必须真实存在**。名字写错时 `tsc` 与本文件都拦不住
+ * （声明是我写的），浏览器里会拿到 `undefined` 当组件用，整棵 React 树抛错——
+ * 这真的把用户的页面搞崩过一次。权威名单由 `scripts/test-client-primitives.mjs`
+ * 对着**安装里的真实产物**校验，那个才是骗不过的那道。
  */
 declare module "@deepseek-ai/dsh-client-ui-primitives" {
   import type { ComponentType } from "react";
@@ -17,8 +22,12 @@ declare module "@deepseek-ai/dsh-client-ui-primitives" {
   export const Button: ComponentType<Record<string, unknown>>;
   export const Tag: ComponentType<Record<string, unknown>>;
   export const StateDot: ComponentType<Record<string, unknown>>;
-  export const IconFileRegular: ComponentType<Record<string, unknown>>;
-  export const IconFolderRegular: ComponentType<Record<string, unknown>>;
+  export const DisclosureRow: ComponentType<Record<string, unknown>>;
+  export const MarkdownText: ComponentType<Record<string, unknown>>;
+  /** 真实存在的图标（名字已对安装内的产物核对过；错的会在浏览器里把整棵树弄崩） */
+  export const IconListPenOutlineRegular: ComponentType<Record<string, unknown>>;
+  export const IconFolderOpenRegular: ComponentType<Record<string, unknown>>;
+  export const IconDeliverDocRegular: ComponentType<Record<string, unknown>>;
 }
 
 declare interface ClientSlotsService {

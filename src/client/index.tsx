@@ -14,7 +14,7 @@
  * - 必须先 `ctx.slots.inject(key, …)`——slot 由父条目声明，凭空 register 会抛 `is not declared`。
  */
 import type { ReactNode } from "react";
-import { IconFolderRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconListPenOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { NovelPanel } from "./panel";
 import { PanelContext, usePanelStore } from "./state";
 import { installStyles } from "./styles";
@@ -25,7 +25,7 @@ const PANEL_ORDER = 60;
 
 /** 侧栏图标：只负责渲染，点击与展开由 sidebar 的首方实现接管 */
 function NovelIcon(): ReactNode {
-  return <IconFolderRegular size={16} />;
+  return <IconListPenOutlineRegular size={16} />;
 }
 
 /** 把 store 与 Context 一起挂到面板上；store 只在这一层创建 */

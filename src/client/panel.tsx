@@ -7,7 +7,7 @@
  * 只读是刻意的：写操作要与模型抢同一份稿子，得先设计冲突 UX 并复用 CAS 语义。
  */
 import type { ReactNode } from "react";
-import { Button, IconFolderRegular, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconListPenOutlineRegular, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChapterSummary, ProjectDetail } from "./api";
 import { usePanel } from "./state";
 import { useChapterKeys } from "./useChapterKeys";
@@ -23,7 +23,7 @@ export function NovelPanel(): ReactNode {
     <div className="nnv-root">
       <header className="nnv-header">
         <span className="nnv-brand">
-          <IconFolderRegular size={15} />
+          <IconListPenOutlineRegular size={15} />
           <span className="nnv-title">{active?.title ?? "NovelNovel"}</span>
         </span>
         {active !== null ? (
