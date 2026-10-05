@@ -555,17 +555,21 @@ export class NovelStore {
       createdAt: now,
       updatedAt: now,
     };
-    await this.ops.writeJson(this.projectFile(id), project, session);
-    await this.ops.writeJson(this.lorebookFile(id), [], session);
+    await this.ops.writeJson(this.projectFile(id), project, session, undefined, false);
+    await this.ops.writeJson(this.lorebookFile(id), [], session, undefined, false);
     await this.ops.writeJson(
       this.presetsFile(id),
       { activePresetId: null, presets: [] } satisfies PresetFile,
       session,
+      undefined,
+      false,
     );
     await this.ops.writeJson(
       this.chapterIndexFile(id),
       { items: [] } satisfies ChapterIndex,
       session,
+      undefined,
+      false,
     );
     await this.setActiveProject(session, id);
     return project;
@@ -1444,15 +1448,32 @@ export class NovelStore {
     const avatar = avatarBytes ? `${id}.${extensionForMediaType(avatarType)}` : null;
     // 整体展开而不是逐字段抄写：卡解析侧新增字段时不会在这里被静默丢掉
     const character: StoredCharacter = { ...rest, id, avatar };
-    if (avatarBytes && avatar) {
-      await this.ops.writeBytes(
-        this.characterAvatarPath(projectId, avatar),
-        avatarBytes,
-        session,
-      );
-    }
-    await this.ops.writeJson(this.characterFile(projectId, id), character, session);
+    /**
+     * 卡片、头像、词条合并三步是一个整体：任何一步失败都**回滚前两步**。
+     *
+     * - 头像写卡片之前，而头像走 node:fs（不受沙箱与取消约束）：卡片那步失败或被取消时会留下
+     *   「有头像、没有 .json」的残骸——读路径只扫 `*.json`，那个头像既不显示也不清理。
+     * - 词条合并失败时若不回滚，模型重试会再建一张新 id 的同名卡，两张都 active、都注入简报。
+     *
+     * 回滚本身失败不能掩盖原始错误，所以每次 remove 都 catch 掉再抛原错。
+     */
+    const rollback = async (): Promise<void> => {
+      await this.ops.removeFile(this.characterFile(projectId, id), session).catch(() => undefined);
+      if (avatar) {
+        await this.ops
+          .removeFile(this.characterAvatarPath(projectId, avatar), session)
+          .catch(() => undefined);
+      }
+    };
     try {
+      if (avatarBytes && avatar) {
+        await this.ops.writeBytes(
+          this.characterAvatarPath(projectId, avatar),
+          avatarBytes,
+          session,
+        );
+      }
+      await this.ops.writeJson(this.characterFile(projectId, id), character, session);
       const lore = await this.addLoreEntries(session, projectId, parsed.loreEntries);
       return {
         character,
@@ -1461,14 +1482,7 @@ export class NovelStore {
         ...(avatarNote !== undefined ? { avatarNote } : {}),
       };
     } catch (error: unknown) {
-      // 词条合并失败就**回滚卡片与头像**：否则模型重试会再建一张新 id 的同名卡，
-      // 两张都 active、都注入简报。回滚本身失败也不能掩盖原始错误。
-      await this.ops.removeFile(this.characterFile(projectId, id), session).catch(() => undefined);
-      if (avatar) {
-        await this.ops
-          .removeFile(this.characterAvatarPath(projectId, avatar), session)
-          .catch(() => undefined);
-      }
+      await rollback();
       throw error;
     }
   }

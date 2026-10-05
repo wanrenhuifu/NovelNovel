@@ -30,11 +30,6 @@ function isInstruct(o: Record<string, unknown>): boolean {
   return "input_sequence" in o && "output_sequence" in o;
 }
 
-/** 只有内容真的是字符串才算「认得出」——`{content: 42}` 是坏文件，不是空预设 */
-function nonEmptyString(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 /** context 模板检测：story_string 是字符串（空串也算认得出，由调用方报「空操作」） */
 function isContext(o: Record<string, unknown>): boolean {
   return typeof o.story_string === "string";
@@ -56,30 +51,6 @@ function parseInstruct(o: Record<string, unknown>): ParsedPreset {
     },
     note:
       "Instruct 预设控制的是对话轮次格式（由 API 的消息结构承担），不参与系统提示词组装，已存档备查。",
-  };
-}
-
-function parseContext(o: Record<string, unknown>): ParsedPreset {
-  return {
-    preset: {
-      name: str(o.name).trim() || "未命名预设",
-      kind: "context",
-      systemPrompt: "",
-      storyString: str(o.story_string),
-      rawData: JSON.stringify(o),
-    },
-  };
-}
-
-function parseSysprompt(o: Record<string, unknown>): ParsedPreset {
-  return {
-    preset: {
-      name: str(o.name).trim() || "未命名预设",
-      kind: "system",
-      systemPrompt: str(o.content),
-      storyString: "",
-      rawData: JSON.stringify(o),
-    },
   };
 }
 
@@ -145,27 +116,43 @@ export function parsePresetFile(text: string): ParsedPreset {
     return parsed;
   }
 
-  // 裸预设按特征检测，顺序：instruct > context > sysprompt > reasoning
-  if (isInstruct(json)) return parseInstruct(json);
+  // 裸预设：按特征取用，**能合并就合并**。
+  //
+  // 原来是一条互斥的选择链（instruct > context > sysprompt），于是同时带 `content` 与
+  // `story_string` 的文件只取一支：要么系统提示词静默丢失，要么 story_string 是空白时
+  // 把本来可用的 `content` 一起否掉（同一个内容装进信封却能合并，换壳行为不一致）。
+  if (isInstruct(json) && !isContext(json) && !isSysprompt(json)) return parseInstruct(json);
+
+  const systemPrompt = str(json.content).trim();
+  const storyString = str(json.story_string);
+  if (systemPrompt !== "" || storyString.trim() !== "") {
+    const kinds: string[] = [];
+    if (systemPrompt !== "") kinds.push("content");
+    if (storyString.trim() !== "") kinds.push("story_string");
+    return {
+      preset: {
+        name: str(json.name).trim() || "未命名预设",
+        kind: storyString.trim() !== "" ? "context" : "system",
+        systemPrompt,
+        storyString,
+        rawData: JSON.stringify(json),
+      },
+      note: `按裸预设导入（${kinds.join(" + ")}）。`,
+    };
+  }
+
+  // 走到这里说明一个可用字段都没有：给出与该文件形状相符的原因
   if (isContext(json)) {
-    const parsed = parseContext(json);
-    if (!nonEmptyString(parsed.preset.storyString)) {
-      throw new Error(
-        "这个预设的 story_string 是空的：导入它等于什么都不改（简报会退回内置默认提示词）。" +
-          "请确认选对了文件。",
-      );
-    }
-    return parsed;
+    throw new Error(
+      "这个预设的 story_string 是空的：导入它等于什么都不改（简报会退回内置默认提示词）。" +
+        "请确认选对了文件。",
+    );
   }
   if (isSysprompt(json)) {
-    const parsed = parseSysprompt(json);
-    if (!nonEmptyString(parsed.preset.systemPrompt)) {
-      throw new Error(
-        "这个预设的 content 是空的：导入它等于什么都不改（简报会退回内置默认提示词）。" +
-          "请确认选对了文件。",
-      );
-    }
-    return parsed;
+    throw new Error(
+      "这个预设的 content 是空的：导入它等于什么都不改（简报会退回内置默认提示词）。" +
+        "请确认选对了文件。",
+    );
   }
   if ("prefix" in json && "suffix" in json) {
     throw new Error("这是 reasoning（思考格式）预设，小说写作暂不适用");

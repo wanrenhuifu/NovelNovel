@@ -286,5 +286,20 @@ const orphan = [
 const to = trimChatHistory(orphan, 1);
 check("开头悬空 assistant: 被切掉", roles(to) === "user,assistant" && to[0].content === "u1");
 
+// ── 裸预设的 content 与 story_string 必须**都**保留 ──────────────
+// 原来是一条互斥选择链（instruct > context > sysprompt）：同时带这两个字段的文件只取一支，
+// 另一支静默丢失；story_string 是空白时还会把本来可用的 content 一起否掉。
+console.log("--- 裸预设合并 ---");
+const both = parsePresetFile(
+  JSON.stringify({ name: "两个都有", content: "你是写作助手", story_string: "{{description}}" }),
+);
+check("裸预设: content 与 story_string 同时保留", both.preset.systemPrompt === "你是写作助手" && both.preset.storyString === "{{description}}");
+
+const blankTemplate = parsePresetFile(
+  JSON.stringify({ name: "模板空白", content: "你是写作助手", story_string: "   " }),
+);
+check("裸预设: story_string 只有空白时不否掉 content", blankTemplate.preset.systemPrompt === "你是写作助手");
+check("裸预设: 空白 story_string 不乱改 kind", blankTemplate.preset.kind === "system");
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
