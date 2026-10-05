@@ -32,36 +32,61 @@ function resolutionAnchors(): string[] {
 }
 
 /**
+ * 可信锚点：**不含 cwd**。
+ *
+ * 与 `resolutionAnchors()` 的差别就在这条：解析候选可以包含 cwd（profile 级模块后备目录在那），
+ * 但**版本基准不能**——工作树里躺着旧 `@deepseek-ai` 副本时，cwd 会把旧版本变成基准并缓存进
+ * `state.runtime`，此后每个候选都拿这个错基准去比，守卫等于白设。
+ */
+function trustedAnchors(): string[] {
+  const anchors: string[] = [fileURLToPath(new URL("anchor.mjs", import.meta.url))];
+  const entry = process.argv[1];
+  if (entry) anchors.push(entry);
+  const explicit = process.env.DSH_ENTRY;
+  if (explicit) anchors.push(explicit, join(explicit, "anchor.mjs"));
+  const dshHome = process.env.DSH_HOME;
+  if (dshHome) anchors.push(join(dshHome, "profiles", "anchor.mjs"));
+  return anchors;
+}
+
+/**
  * 读一个包的版本。走 createRequire 而不是 node:fs：本包在 `types: []` 下编译，
  * 没有 node 类型声明，`node:fs` 用不了；模块解析器则本来就可用。
  * `resolvedPath` 是已解析出的模块文件，manifest 就在它所属包的目录里。
  */
 function packageVersion(from: string, name: string, resolvedPath?: string): string | undefined {
+  // 两条路都试：`require.resolve` 是解析器给出的真实包根，而手工 `..` 在入口是
+  // 嵌套形态（`dist/esm/*.mjs`、exports 指到子目录）时会指到一个无关目录里的 package.json，
+  // 读出来的就是**别的包**的版本。
+  const candidates: string[] = [];
   try {
-    const require = createRequire(from);
-    const manifestPath = resolvedPath
-      ? join(dirname(resolvedPath), "..", "package.json")
-      : require.resolve(`${name}/package.json`);
-    const manifest = require(manifestPath) as { version?: unknown };
-    return typeof manifest.version === "string" ? manifest.version : undefined;
+    candidates.push(createRequire(from).resolve(`${name}/package.json`));
   } catch {
-    return undefined;
+    /* 下一步用手工路径兜底 */
   }
+  if (resolvedPath !== undefined) candidates.push(join(dirname(resolvedPath), "..", "package.json"));
+  for (const manifestPath of candidates) {
+    try {
+      const manifest = createRequire(from)(manifestPath) as { version?: unknown };
+      if (typeof manifest.version === "string") return manifest.version;
+    } catch {
+      /* 换下一个候选 */
+    }
+  }
+  return undefined;
 }
 
 /**
  * 运行时版本 = harness 安装里 `@deepseek-ai/dsh-app-boot` 的版本。
  * 同一安装内的 `@deepseek-ai/dsh-*` 子包同版本发布，插件清单的 peer 就是按它判定的。
  *
- * 基准只从**可信锚点**取：本包旁边、harness 进程入口、$DSH_HOME/profiles。
- * 有意不取 cwd——工作树里躺着旧副本时，cwd 会把旧版本变成基准，守卫就白设了。
+ * 基准只从 `trustedAnchors()` 取（**有意不含 cwd**，理由见那个函数）。
  * 全部落空返回 undefined（调用方据此报错，而不是放行）。
  */
 function runtimeVersion(): string | undefined {
   const state = versionBaseline();
   if (state.runtime !== undefined) return state.runtime;
-  const trusted = [fileURLToPath(new URL("anchor.mjs", import.meta.url)), ...resolutionAnchors()];
-  for (const anchor of trusted) {
+  for (const anchor of trustedAnchors()) {
     const version = packageVersion(anchor, "@deepseek-ai/dsh-app-boot");
     if (version !== undefined) {
       state.runtime = version;
@@ -220,8 +245,17 @@ function assertRuntimeCopy(specifier: string, resolvedPath: string, anchor: stri
         "Resolving from this working tree is not enough — a leftover @deepseek-ai copy there would be a second harness.",
     );
   }
-  /* v8 ignore next -- 解析成功的包必有可读 manifest，这里只是防御 */
-  if (found === undefined) return;
+  // 读不出这一份的版本 = **证明不了**它属于运行中的 harness。原来这里直接 return 放行，
+  // 而 `packageVersion` 在入口是嵌套形态、或恰好指到一个无关的 package.json 时会返回
+  // undefined —— 于是守卫在这条路径上完全空转。宁可报错：放行的代价是运行期加载第二份 harness。
+  if (found === undefined) {
+    throw new Error(
+      `dsh-novelnovel: "${specifier}" resolved to ${resolvedPath} but its package.json could not be read, ` +
+        "so this copy cannot be proven to belong to the running harness.\n" +
+        "Point the plugin at the harness installation (DSH Desktop ships one; the CLI launcher does this for you):\n" +
+        "  dsh plugin --profile <name> add <path|tarball>",
+    );
+  }
   const range = state.peers[specifier];
   const verdict =
     range === undefined ? undefined : range.trim() === "*" ? undefined : satisfies(range, found);
