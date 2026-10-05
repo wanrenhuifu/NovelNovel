@@ -226,6 +226,39 @@ if (imported.ok) {
   );
 }
 
+// ── 前文摘录取不到时必须点名 ─────────────────────────────────────
+// 同一类"读不到就当没有"的静默：`previousExcerpts` 拿到 null 时原来只是 `continue`，
+// 于是"紧邻的上一章"从简报里消失而调用方完全不知道——续写恰恰最依赖这一段。
+console.log("--- 前文缺失要点名 ---");
+{
+  const ctxProject = await call("novel_project", { action: "create", title: "前文缺失" });
+  const ctxPid = ctxProject.r.details.project_id;
+  const one = await call("novel_chapter", { action: "create", title: "第一章", text: "第一章的正文" });
+  await call("novel_chapter", { action: "create", title: "第二章", text: "第二章的正文" });
+
+  const healthy = await call("novel_context", { chapter: "第二章" });
+  check("前文都在时简报能取到上一章", healthy.ok && healthy.r.details.prev_chapters.includes("第一章"), healthy.ok ? JSON.stringify(healthy.r.details.prev_chapters) : healthy.error);
+  check("前文都在时不报缺失", healthy.ok && healthy.r.details.prev_chapters_missing_body === undefined, "ok");
+
+  // 删掉第一章的正文文件（模拟 deleteChapter 在两步之间被中断）
+  rmSync(join(workspace, ".novelnovel", "projects", ctxPid, "chapters", `${one.r.details.chapter_id}.md`), {
+    force: true,
+  });
+
+  const broken = await call("novel_context", { chapter: "第二章" });
+  check("正文缺失时简报仍能组装（不崩）", broken.ok, broken.ok ? "" : broken.error);
+  check(
+    "简报要点名取不到的那一章",
+    broken.ok && /could not be excerpted/i.test(broken.r.summary),
+    broken.ok ? "" : broken.error,
+  );
+  check(
+    "details 里给出缺失的章节（可编程判据）",
+    broken.ok && (broken.r.details.prev_chapters_missing_body ?? []).length === 1,
+    broken.ok ? JSON.stringify(broken.r.details.prev_chapters_missing_body) : broken.error,
+  );
+}
+
 rmSync(workspace, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "全部通过" : `${String(failed)} 项失败`}：${String(passed + failed)} 项检查`);
 process.exit(failed === 0 ? 0 : 1);

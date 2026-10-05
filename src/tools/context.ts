@@ -72,13 +72,14 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
         const prevCount = clamp(args.prev_chapters ?? config.defaultPrevChapterCount, config.maxPrevChapterCount);
         const prevChars = clamp(args.prev_chars ?? config.defaultPrevChapterChars, config.maxPrevChapterChars);
         const recentChars = clamp(args.recent_chars ?? config.defaultRecentChars, config.maxPrevChapterChars);
-        const prev = await store.previousExcerpts(
+        const prevResult = await store.previousExcerpts(
           session,
           projectId,
           chapter.id,
           prevCount,
           prevChars,
         );
+        const prev = prevResult.excerpts;
         // 注意 slice(-0) === slice(0) 会取到整章，0 必须单独处理
         const recent = recentChars > 0 ? chapter.content.trim().slice(-recentChars) : "";
 
@@ -132,6 +133,13 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
             ? `(skipped ${skipped} injectable entries whose keywords did not appear)`
             : null,
           ...systemPrompt.warnings.map((warning) => `⚠️ ${warning}`),
+          ...(prevResult.missing.length > 0
+            ? [
+                `⚠️ ${String(prevResult.missing.length)} preceding chapter(s) could not be excerpted ` +
+                  `because their body file is missing on disk: ${prevResult.missing.join(", ")}. ` +
+                  "This brief is therefore missing that context — restore the file(s) before continuing.",
+              ]
+            : []),
           "",
           "## Participating characters",
           characters.length > 0
@@ -151,6 +159,7 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
             system_prompt_chars: systemPrompt.text.length,
             preset_warnings: systemPrompt.warnings,
             prev_chapters: prev.map((item) => item.title),
+            ...(prevResult.missing.length > 0 ? { prev_chapters_missing_body: prevResult.missing } : {}),
             recent_chars: recent.length,
             injected_entries: injected.map((entry) => entry.name),
             characters: characters.map((character) => character.name),

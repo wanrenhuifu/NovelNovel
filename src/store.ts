@@ -1652,28 +1652,38 @@ export class NovelStore {
     return (await this.listCharacters(session, projectId)).filter((c) => c.active);
   }
 
-  /** 前 N 章尾部摘录（由远及近，丢弃空章节），供续写时保持情节连贯 */
+  /**
+   * 前 N 章尾部摘录（由远及近，丢弃空章节），供续写时保持情节连贯。
+   *
+   * 同时回报**取不到正文**的那几章：正文缺失（`deleteChapter` 在两步之间被中断、
+   * 用户手工挪走文件）时原来只是 `continue` 掉，于是"紧邻的上一章"会从简报里消失而
+   * 调用方**完全不知道**——续写最容易出问题的地方恰恰是这里。返回 `missing` 让上层点名。
+   */
   async previousExcerpts(
     session: FsSession,
     projectId: string,
     chapterId: string,
     count: number,
     chars: number,
-  ): Promise<{ title: string; text: string }[]> {
-    if (count <= 0 || chars <= 0) return [];
+  ): Promise<{ excerpts: { title: string; text: string }[]; missing: string[] }> {
+    if (count <= 0 || chars <= 0) return { excerpts: [], missing: [] };
     // 先用索引定位（listChapterMetas 与 listChapters 同为 sortOrder 排序），
     // 只读需要摘录的那几章正文——否则为了一段前文要读遍全书。
     const metas = await this.listChapterMetas(session, projectId);
     const index = metas.findIndex((meta) => meta.id === chapterId);
-    if (index <= 0) return [];
+    if (index <= 0) return { excerpts: [], missing: [] };
     const excerpts: { title: string; text: string }[] = [];
+    const missing: string[] = [];
     for (const meta of metas.slice(Math.max(0, index - count), index)) {
-      const content =
-        (await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session)) ?? "";
+      const content = await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session);
+      if (content === null) {
+        missing.push(`${meta.title} [${meta.id}]`);
+        continue;
+      }
       if (!content.trim()) continue;
       excerpts.push({ title: meta.title, text: content.trim().slice(-chars) });
     }
-    return excerpts;
+    return { excerpts, missing };
   }
 }
 
