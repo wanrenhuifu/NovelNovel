@@ -894,6 +894,49 @@ assert.equal(JSON.parse(healedRaw).activeProject, orphanProject, "自愈后指�
 writeFileSync(workspaceFile, workspaceBackup, "utf8");
 ok("a corrupted workspace.json is rebuilt instead of blocking every pointer write");
 
+// ── 索引列着、正文不在：列表必须点名，而不是显示成 (empty) ────────
+// `deleteChapter` 先删正文再改索引，两步之间被中断（取消/失败）就留下这种半步状态。
+// 此前 `list` 把它显示成 `(empty)`，而 `read` 对同一章报 "body file is missing"——
+// 同一份数据两种说法，用户看不出哪个是真的。
+step("missing chapter body is reported by list");
+{
+  const listProject = await call("novel_project", { action: "create", title: "缺正文" });
+  const listPid = listProject.details.project_id;
+  const made = await call("novel_chapter", { action: "create", title: "会丢正文的一章", text: "内容" });
+  const chaptersDir = join(workspace, ".novelnovel", "projects", listPid, "chapters");
+  const beforeList = await call("novel_chapter", { action: "list" });
+  assert.equal(
+    beforeList.details.chapters_missing_body,
+    undefined,
+    "正文都在时不该报缺正文",
+  );
+  rmSync(join(chaptersDir, `${made.details.chapter_id}.md`), { force: true });
+  const afterList = await call("novel_chapter", { action: "list" });
+  assert.ok(
+    afterList.summary.includes("body file is missing"),
+    "列表要点名正文缺失，而不是显示 (empty)",
+  );
+  assert.match(
+    afterList.summary,
+    /body file is missing/,
+    "提示里要说明索引仍列着这一章",
+  );
+  assert.deepEqual(
+    afterList.details.chapters_missing_body,
+    [made.details.chapter_id],
+    "details 里要给出缺失的章节 id",
+  );
+  // read 与 list 的口径必须一致：两边都报"正文不在"。
+  // 注意 `assert.rejects` 的第三参是"**没有**拒绝时抛出的文案"，不是自定义断言信息——
+  // 传字符串进去会变成它内部的断言失败（我在这里踩过一次，报错看着像"正则不匹配"）。
+  const readOutcome = await call("novel_chapter", { action: "read", chapter: made.details.chapter_id }).then(
+    () => "成功了（应当报缺正文）",
+    (error) => String(error?.message ?? error),
+  );
+  assert.match(readOutcome, /body .{0,12}missing/, `read 也要报缺正文，实际: ${readOutcome.slice(0, 140)}`);
+  ok("a chapter whose body is gone is named by list, not shown as empty");
+}
+
 // ── 没有会话工作区时，写入必须被拒绝而不是落到 process.cwd() ──────
 // 探针实测过这条坑：exec.agent 缺失时 cwd 兜底到 process.cwd()（桌面端=应用安装目录），
 // 数据静默写进那里——用户工作区里什么都没有，那个目录也不在面板白名单里，既看不到也选不中。

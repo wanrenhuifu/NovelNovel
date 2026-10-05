@@ -82,6 +82,11 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
         if (args.action === "list") {
           const chapters = await store.listChapters(session, projectId);
           const words = chapters.reduce((sum, chapter) => sum + chapter.words, 0);
+          // 索引里列着、正文文件却不在的章节（`deleteChapter` 在"删正文"与"改索引"之间被中断
+          // 就会留下这种半步状态）。不点名的话列表会把它显示成 `(empty)`，而 `action=read`
+          // 对同一章报 "body file is missing"——同一份数据两种说法。
+          const missing = await store.chaptersWithMissingBody(session, projectId);
+          const missingSet = new Set(missing);
           const summary = lines(
             chapters.length === 0
               ? `No chapter yet. Add one with novel_chapter action=create title="<chapter title>".`
@@ -90,7 +95,12 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
               lines(
                 `${index + 1}. ${chapter.title} [${chapter.id}] — ${chapter.words} words` +
                   (chapter.tags.length > 0 ? ` · tags: ${chapter.tags.join("/")}` : ""),
-                chapter.content.trim() ? `   ${preview(chapter.content, 70)}` : "   (empty)",
+                missingSet.has(chapter.id)
+                  ? "   ⚠ body file is missing on disk — the index still lists this chapter. " +
+                    "Restore the file, or delete the chapter and create it again."
+                  : chapter.content.trim()
+                    ? `   ${preview(chapter.content, 70)}`
+                    : "   (empty)",
               ),
             ),
           );
@@ -107,6 +117,7 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
                 words: chapter.words,
               })),
               words,
+              ...(missing.length > 0 ? { chapters_missing_body: missing } : {}),
             },
           };
         }

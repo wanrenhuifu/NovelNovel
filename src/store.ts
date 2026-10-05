@@ -1069,6 +1069,20 @@ export class NovelStore {
     return [...index.items].sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
+  /**
+   * 索引里列着、正文文件却不在的章节 id。
+   *
+   * 这是"半步状态"的读侧口径：`deleteChapter` 先删正文再改索引，一旦在两步之间被取消或失败，
+   * 索引就还列着那一章。此前 `listChapters` 会把它显示成 `(empty)`、0 字（正文读不到就当空串），
+   * 而同一个 `action=read` 却报 "body file is missing"——同一份数据两种说法，用户看不出哪个是真的。
+   * 现在列表也如实点名（见 `tools/chapter.ts` 的 list 输出），半步状态立刻可见。
+   */
+  async chaptersWithMissingBody(session: FsSession, projectId: string): Promise<string[]> {
+    const metas = await this.listChapterMetas(session, projectId);
+    const present = new Set(await this.chapterBodyIds(session, projectId));
+    return metas.filter((meta) => !present.has(meta.id)).map((meta) => meta.id);
+  }
+
   /** 章节列表（带正文与字数）：正文以文件为准，agent 直接改文件也能反映出来 */
   async listChapters(session: FsSession, projectId: string): Promise<Chapter[]> {
     const metas = await this.listChapterMetas(session, projectId);
