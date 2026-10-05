@@ -111,11 +111,21 @@ export class SkillStore {
   }
 
   /** 解析一个技能文件；不是技能（缺 frontmatter、名字非法等）返回 null 而不是抛错 */
-  private parseOrNull(text: string, file: string): { frontmatter: SkillFrontmatter; content: string } | null {
+  /**
+   * 解析 SKILL.md，失败时**带上原因**返回。
+   *
+   * 原来只返回 null、调用方直接跳过——于是"有个技能文件但解析不了"表现为**它从列表里消失**，
+   * 用户看到的是"我明明放了一个技能，工具说没有"。同类的静默今天已经修过三处
+   * （缺正文的章节、前文摘录、索引列着正文不在），这里把原因留下来让上层点名。
+   */
+  private parseOrNull(
+    text: string,
+    file: string,
+  ): { frontmatter: SkillFrontmatter; content: string } | { error: string } {
     try {
       return parseSkillFile(text, file);
-    } catch {
-      return null;
+    } catch (error: unknown) {
+      return { error: String((error as Error)?.message ?? error) };
     }
   }
 
@@ -124,39 +134,56 @@ export class SkillStore {
     dir: string | null,
     bundled: string[],
     session: FsSession,
-  ): Promise<ProjectSkill | null> {
+  ): Promise<{ skill: ProjectSkill } | { broken: { path: string; error: string } } | null> {
     const text = await this.ops.readTextOrNull(file, session);
     if (text === null) return null;
     const parsed = this.parseOrNull(text, file);
-    if (!parsed) return null;
+    if ("error" in parsed) {
+      return { broken: { path: (await this.ops.resolve(file, session)).displayPath, error: parsed.error } };
+    }
     const marker = dir ? await this.ops.readJson<SkillMarker>(join(dir, MARKER_FILE), session) : null;
     return {
-      name: parsed.frontmatter.name,
-      description: parsed.frontmatter.description,
-      path: (await this.ops.resolve(file, session)).displayPath,
-      dir,
-      file,
-      ...(marker ? { imported: marker } : {}),
-      shadowsBundled: bundled.includes(parsed.frontmatter.name),
+      skill: {
+        name: parsed.frontmatter.name,
+        description: parsed.frontmatter.description,
+        path: (await this.ops.resolve(file, session)).displayPath,
+        dir,
+        file,
+        ...(marker ? { imported: marker } : {}),
+        shadowsBundled: bundled.includes(parsed.frontmatter.name),
+      },
     };
   }
 
-  /** 列出技能根下的技能。harness 两种形状都认：目录形 `<name>/SKILL.md` 与扁平形 `<name>.md` */
+  /**
+   * 列出技能根下的技能。harness 两种形状都认：目录形 `<name>/SKILL.md` 与扁平形 `<name>.md`。
+   * 解析不了的文件进 `broken` 并带上原因——不能静默跳过（那会让"技能明明在、工具说没有"）。
+   */
   async list(session: FsSession): Promise<ProjectSkill[]> {
+    return (await this.listDiagnosed(session)).skills;
+  }
+
+  async listDiagnosed(
+    session: FsSession,
+  ): Promise<{ skills: ProjectSkill[]; broken: { path: string; error: string }[] }> {
     const root = await this.skillsRoot(session);
     const bundled = await bundledSkillNames((message) => this.ctx.logger.warn(message));
     const skills: ProjectSkill[] = [];
+    const broken: { path: string; error: string }[] = [];
     for (const entry of await this.ops.listDir(root, session)) {
-      if (entry.type === "directory") {
-        const dir = join(root, entry.name);
-        const found = await this.describe(join(dir, "SKILL.md"), dir, bundled, session);
-        if (found) skills.push(found);
-      } else if (entry.type === "file" && entry.name.endsWith(".md")) {
-        const found = await this.describe(join(root, entry.name), null, bundled, session);
-        if (found) skills.push(found);
-      }
+      const candidate =
+        entry.type === "directory"
+          ? { file: join(root, entry.name, "SKILL.md"), dir: join(root, entry.name) }
+          : entry.type === "file" && entry.name.endsWith(".md")
+            ? { file: join(root, entry.name), dir: null }
+            : null;
+      if (candidate === null) continue;
+      const found = await this.describe(candidate.file, candidate.dir, bundled, session);
+      if (found === null) continue;
+      if ("broken" in found) broken.push(found.broken);
+      else skills.push(found.skill);
     }
-    return skills.sort((a, b) => a.name.localeCompare(b.name));
+    return { skills: skills.sort((a, b) => a.name.localeCompare(b.name)), broken };
   }
 
   /** 解析技能引用：名字精确 → 名字唯一部分匹配（与章节、角色卡、预设的解析口径一致） */
@@ -182,7 +209,9 @@ export class SkillStore {
     const packed = await Promise.all(
       skills.map(async (skill) => {
         const parsed = this.parseOrNull((await this.ops.readText(skill.file, session)), skill.file);
-        if (!parsed) throw new Error(`skill "${skill.name}" is no longer readable: ${skill.path}`);
+        if ("error" in parsed) {
+          throw new Error(`skill "${skill.name}" is no longer readable (${parsed.error}): ${skill.path}`);
+        }
         return {
           name: parsed.frontmatter.name,
           description: parsed.frontmatter.description,

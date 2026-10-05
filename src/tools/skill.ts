@@ -52,7 +52,7 @@ export function registerSkillTool({ ctx, skillStore, config, defineTool }: ToolD
         const session = skillStore.sessionOf(exec);
 
         if (args.action === "list") {
-          const skills = await skillStore.list(session);
+          const { skills, broken } = await skillStore.listDiagnosed(session);
           return {
             action: args.action,
             summary: lines(
@@ -66,6 +66,8 @@ export function registerSkillTool({ ctx, skillStore, config, defineTool }: ToolD
                   `  ${preview(skill.description, 90)}`,
                 ),
               ),
+              // 解析不了的文件必须点名：静默跳过会表现为"技能明明放好了，工具说没有"
+              ...broken.map((item) => `⚠️ ${item.path} could not be parsed and is NOT loaded: ${item.error}`),
             ),
             details: {
               skills: skills.map((skill) => ({
@@ -74,6 +76,9 @@ export function registerSkillTool({ ctx, skillStore, config, defineTool }: ToolD
                 imported: Boolean(skill.imported),
                 shadows_bundled: skill.shadowsBundled,
               })),
+              ...(broken.length > 0
+                ? { skills_unparsable: broken.map((item) => ({ path: item.path, error: item.error })) }
+                : {}),
             },
           };
         }

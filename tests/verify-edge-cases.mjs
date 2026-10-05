@@ -259,6 +259,34 @@ console.log("--- 前文缺失要点名 ---");
   );
 }
 
+// ── 技能文件解析不了时必须点名（不能从列表里消失）──────────────────
+// 同一类静默的第四处：`describe` 原来在解析失败时返回 null、`list` 直接跳过，于是
+// "我明明放了一个技能文件，工具说没有"——用户没有任何线索。
+console.log("--- 技能文件解析失败要点名 ---");
+{
+  const skillsDir = join(workspace, ".dsh", "skills", "broken-skill");
+  mkdirSync(skillsDir, { recursive: true });
+  writeFileSync(join(skillsDir, "SKILL.md"), "这个文件没有 frontmatter", "utf8");
+
+  const listed = await call("novel_skill", { action: "list" });
+  check("技能列表仍能返回（不崩）", listed.ok, listed.ok ? "" : listed.error);
+  check(
+    "列表点名解析不了的文件",
+    listed.ok && /could not be parsed/i.test(listed.r.summary),
+    listed.ok ? "" : listed.error,
+  );
+  check(
+    "details 里给出不可解析的技能（可编程判据）",
+    listed.ok && (listed.r.details.skills_unparsable ?? []).length === 1,
+    listed.ok ? JSON.stringify(listed.r.details.skills_unparsable) : listed.error,
+  );
+  check(
+    "坏技能不出现在可用列表里（避免被当成能加载的技能）",
+    listed.ok && !(listed.r.details.skills ?? []).some((s) => s.name === "broken-skill"),
+    listed.ok ? JSON.stringify((listed.r.details.skills ?? []).map((s) => s.name)) : listed.error,
+  );
+}
+
 rmSync(workspace, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "全部通过" : `${String(failed)} 项失败`}：${String(passed + failed)} 项检查`);
 process.exit(failed === 0 ? 0 : 1);
