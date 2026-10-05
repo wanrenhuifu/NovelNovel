@@ -24,25 +24,46 @@ export class ApiFailure extends Error {
   }
 }
 
-async function request<T>(path: string, params: Record<string, string | undefined>): Promise<T> {
+/**
+ * 把路由路径 + 查询参数拼成**文档相对**的请求地址（不以 `/` 开头）。
+ *
+ * 抽出来是为了能测：它看着只有两行，但错了面板就整个取不到数据，而这半边从来没有过验证。
+ * 三条不能破的约定：
+ * - 前导 `/` 必须去掉（去掉后才是文档相对，反代前缀下也对）；
+ * - `value === ""` 与 `undefined` 一样跳过——空串会被后端当成"没传"，但拼上去会让
+ *   `known_workspace` 那类分支收到 `cwd=` 而不是缺省；
+ * - 已有 query 要保留（目前调用方都不带，但拼装逻辑不能假设）。
+ */
+export function buildRequestTarget(path: string, params: Record<string, string | undefined>): string {
   const url = new URL(path, "http://localhost/");
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") url.searchParams.set(key, value);
   }
-  // 相对路径：保留 URL 上的 search，去掉开头的 "/"
-  const target = url.pathname.slice(1) + url.search;
+  return url.pathname.slice(1) + url.search;
+}
 
-  const response = await fetch(target, { headers: { accept: "application/json" } });
-  const body: unknown = await response.json().catch(() => undefined);
-  if (!response.ok) {
+/**
+ * 解析响应：`{ data }` 解包，`{ error: { code, message, extra } }` 翻成 `ApiFailure`。
+ * 非 JSON 的 body（首方兜底会回空 body）不能让调用方拿到 `undefined` 就崩——给出带状态码的兜底文案。
+ */
+export function parseResponse<T>(ok: boolean, status: number, body: unknown): T {
+  if (!ok) {
     const error = (body as { error?: ApiError } | undefined)?.error;
     throw new ApiFailure(
-      error?.code ?? `http_${String(response.status)}`,
-      error?.message ?? `request failed with ${String(response.status)}`,
+      error?.code ?? `http_${String(status)}`,
+      error?.message ?? `request failed with ${String(status)}`,
       error?.extra,
     );
   }
   return (body as { data: T }).data;
+}
+
+async function request<T>(path: string, params: Record<string, string | undefined>): Promise<T> {
+  const response = await fetch(buildRequestTarget(path, params), {
+    headers: { accept: "application/json" },
+  });
+  const body: unknown = await response.json().catch(() => undefined);
+  return parseResponse<T>(response.ok, response.status, body);
 }
 
 export interface ProjectSummary {
