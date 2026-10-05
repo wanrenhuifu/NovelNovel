@@ -39,6 +39,7 @@ npm run test:race                   # 并发交错：CAS 真的挡住了吗（�
 npm run test:edge                   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 缺失正文的点名
 npm run test:contract               # 文档契约：README 工具表承诺的 action 必须真实存在（双向）
 npm run test:package                # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册
+npm run test:render                 # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
