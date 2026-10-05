@@ -247,7 +247,9 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   Blob 的必须是 `Uint8Array<ArrayBuffer>`。
 - **Lorebook 注入语义**：`domain/prompt.ts` 的 `selectLoreEntries` —— 词条 keys 为空 = 常驻注入；
   有 keys 时仅当任一关键词（逗号分隔、**大小写与全半角归一化后**）出现在续写上下文里才注入。
-  改语义时同步更新 `skills/novel-cards/SKILL.md` 与 README 的说明。
+  拆分规则只有 `splitLoreKeys` 一份实现（读取侧与写入侧共用），写入侧由 `normalizeLoreKeys`
+  规范化成「逗号 + 空格」——否则 `keys=",,"` 拆完是空数组、会被当成**常驻注入**（每回合全文
+  进提示词），而列表显示"有关键词"。改语义时同步更新 `skills/novel-cards/SKILL.md` 与 README。
 - **写作预设**：`presetImport.ts` 按字段特征识别裸预设（`content`→system、`story_string`→context、
   `input_sequence`→instruct），含 `context`/`sysprompt`/`instruct` 子对象则当合订信封；reasoning 直接
   拒绝；**声明了字段但内容是空串的裸预设也拒绝**（导入它等于什么都不改，静默成功最误导）。
