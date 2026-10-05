@@ -292,17 +292,32 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
   不会被扫描的地方——「工具报成功、技能却不生效」是最难查的一类问题。这是插件唯一往数据目录之外
   写文件的地方，范围由 `ctx.fs.contains` 收紧；导入的技能文件与手写技能走同一条 harness 加载路径，
   插件只摆文件，不维护第二套机制。
-- **破坏性操作**：删除作品 / 章节 / 角色卡都需要 `confirm=true`，插件会拒绝未确认的调用，
-  提示先与用户确认。
+- **破坏性操作**：删除作品 / 章节 / 角色卡 / 词条 / 预设 / 导入的技能都需要 `confirm=true`，
+  插件会拒绝未确认的调用，提示先与用户确认。
+- **「读不出来」绝不用「没有」来表达**：数据文件是给人手改的，磁盘状态可能是半成品
+  （`deleteChapter` 在"删正文"与"改索引"之间被中断、有人挪走了文件、SKILL.md 没写 frontmatter）。
+  这类状态下工具**一律点名并说明原因**，而不是安静地当作空：
+  - `novel_chapter action=list` 对索引里列着但正文不在的章节报
+    `⚠ body file is missing on disk`，`novel_context` 对取不到的前文报
+    `could not be excerpted`（否则续写会悄悄丢掉"上一章讲了什么"）；
+  - `novel_skill action=list` 对解析不了的文件报 `could not be parsed and is NOT loaded`
+    （否则表现为"技能明明放好了、工具说没有"）；
+  - 坏作品目录、坏角色卡、坏词条文件同理，都在列表里点名，而不是消失。
+  这条原则是踩出来的：同一个模式今天在三处独立出现过，每一处都表现为"工具说没有、其实东西在"。
 
 ## 开发
 
 ```bash
 npm run build       # esbuild 打包到 lib/
 npm run typecheck   # tsc -p .（严格模式，零错误）
-npm test            # 7 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配）
+npm test            # 9 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配 / 客户端清单 / 客户端产物）
 npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
-npm run test:dsh    # 端到端验证 49 项（默认 profile: novelnovel，用 DSH_TEST_PROFILE 覆盖）
+npm run test:dsh    # 端到端验证 54 项（默认 profile: novelnovel，用 DSH_TEST_PROFILE 覆盖）
+npm run test:race   # 并发交错：CAS 真的挡住了吗（单次调用测不出静默覆盖）
+npm run test:edge   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 半成品状态的点名
+npm run test:compose    # 用宿主真实注册表验证客户端半边能组合
+npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
+npm run test:chapter-guard  # 章节 id 不能当路径段（越界 id 读不到别的作品）
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
 
