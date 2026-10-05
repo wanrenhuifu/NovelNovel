@@ -31,7 +31,7 @@ node scripts/test-domain-utils.mjs  # 字数统计（标点与扩展 B 汉字）
 node scripts/test-client-manifest.mjs # 客户端半边清单：dsh.client 形态 + exports["./client"] + **产物必须存在**
 node scripts/test-client-bundle.mjs   # 客户端产物：包装格式、external 无漏项、slot 注册冒烟
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
-npm run test:dsh                    # 52 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 54 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
 npm run test:chapter-guard          # 真实 fs 语义：章节 id 不能当路径段（越界 id 读不到别的作品）
@@ -76,7 +76,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `panel.tsx` 是只读视图、`state.ts` 是取数与选择状态、`api.ts` 走文档相对路径请求宿主路由、
   `styles.ts` 注入 CSS（`--dsw-*` token）、`env.d.ts` 补平台模块的类型声明。
   构建产物 `lib/client.js` 由 `build.client.mjs` 包装（**不是 ESM**，见「坑」）。
-- `tests/verify.mjs` 端到端（52 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（54 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`tests/verify-client-compose.mjs` 用宿主真实的
   `ClientModuleRegistry` 验证客户端半边能组合；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/verify-client-compose.mjs` /
