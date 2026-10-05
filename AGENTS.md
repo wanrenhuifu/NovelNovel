@@ -175,6 +175,14 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   （判**空值**而不是 `undefined`——`dsh-tools` 在 exec 缺 agent 时会自己合成 `{header:{cwd:""}}`）。
   这种会话只能读：写入会静默落进 `process.cwd()`，桌面端即应用安装目录，用户工作区里什么都没有，
   那个目录也不在面板白名单里（既看不到也选不中）。写/删/字节写入四个入口都过这道闸。
+  同一个闸还查取消信号（`NN_ABORTED`）：多步序列里不可逆的那一步（node:fs 的 rm、头像 writeFile）
+  本来完全不理会取消。**实测澄清**：主路径上 `ctx.fs.resolve` 自己就会拒绝（`resolve aborted`），
+  所以取消并不会真的落地——插件这道检查是纵深防御，别把它当成唯一的防线。
+- **harness 版本守卫的两条边界**（都实测过，别改回去）：`runtimeVersion()` 的基准锚点
+  **不含 cwd**（`trustedAnchors()` 与 `resolutionAnchors()` 是两份清单：后者含 cwd 供模块解析用，
+  前者供版本基准用）——混进 cwd 会让工作树里的旧副本变成基准并缓存进 `state.runtime`，
+  此后每个候选都拿错基准比，守卫空转；`assertRuntimeCopy` 里**读不到那一份的版本必须报错**，
+  不能放行（`packageVersion` 的手工 `..` 路径在入口是嵌套形态时会指向无关的 package.json）。
 - **目录名就是作品 id**：`scanProjectDirs` 以目录名为权威，`project.json` 里的 `id` 与它不一致时
   该作品被判为不可读并点名（否则「列表显示 A、写入落在 B」）。复制/改名作品目录是用户很自然的
   备份手段，这条防的就是它。
