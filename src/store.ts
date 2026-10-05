@@ -576,18 +576,25 @@ export class NovelStore {
     projectId: string,
     patch: Partial<Pick<NovelProject, "title" | "synopsis" | "worldbuilding" | "authorNote">>,
   ): Promise<NovelProject> {
-    const project = await this.readProject(session, projectId);
-    if (patch.title !== undefined) {
-      const title = patch.title.trim();
-      if (!title) throw new Error("project title cannot be empty");
-      project.title = title;
+    if (patch.title !== undefined && !patch.title.trim()) {
+      throw new Error("project title cannot be empty");
     }
-    if (patch.synopsis !== undefined) project.synopsis = patch.synopsis;
-    if (patch.worldbuilding !== undefined) project.worldbuilding = patch.worldbuilding;
-    if (patch.authorNote !== undefined) project.authorNote = patch.authorNote;
-    project.updatedAt = Date.now();
-    await this.ops.writeJson(this.projectFile(projectId), project, session);
-    return project;
+    // 「读-改-写」必须带 CAS 基准 + 重试：同一轮里的两个并行 update（或两个会话）
+    // 否则会互相静默覆盖——两边都报成功，只有一个字段活下来。
+    return withStaleRetry(async () => {
+      const { value: project, basis } = await this.readJsonVersioned<NovelProject>(
+        this.projectFile(projectId),
+        session,
+      );
+      if (project === null) throw new Error(`project "${projectId}" not found`);
+      if (patch.title !== undefined) project.title = patch.title.trim();
+      if (patch.synopsis !== undefined) project.synopsis = patch.synopsis;
+      if (patch.worldbuilding !== undefined) project.worldbuilding = patch.worldbuilding;
+      if (patch.authorNote !== undefined) project.authorNote = patch.authorNote;
+      project.updatedAt = Date.now();
+      await this.ops.writeJson(this.projectFile(projectId), project, session, basis);
+      return project;
+    });
   }
 
   async deleteProject(
@@ -992,27 +999,41 @@ export class NovelStore {
   }
 
   /**
-   * 索引文件缺失时的安全闸。
+   * 写索引前的安全闸：**只要目录里存在索引未引用的 `.md`，就拒绝写入**。
    *
-   * 索引缺失被当成空索引是危险的：下一次建章会把「只含新章」的索引写回去，
-   * 全书大纲（标题/标签/顺序）一次性消失，已有的 .md 全成孤儿。
-   * 所以缺索引时先看目录里有没有正文——有就拒绝写入并给出修法。
+   * 为什么不能只看"索引是否存在"：索引是给人手改的普通文件，把它改成 `{}`、`[]`、`null`
+   * 或 `{"items":null}` 时 JSON **能解析**、`basis.existed === true`，于是旧的存在性判定直接放行，
+   * 紧接着写入「只含新章」的索引——全书大纲（标题/标签/顺序）一次性消失，已有正文全成孤儿，
+   * 而工具还报成功。所以判据必须是内容层面的：**索引没引用到的正文文件**。
+   *
+   * 同一个检查顺带让另外两种残骸可见：并发建章重试留下的孤儿 `.md`、
+   * 以及 `moveChapter` 旧实现把 payload 与基准分开读时丢掉的那一章。
+   *
+   * @param index 即将写入的索引（新的那份，不是读到的旧那份）
+   * @param known 目录里实际存在的 `.md` 文件名（不含扩展名）
    */
-  private async assertIndexRecoverable(
-    session: FsSession,
+  private assertNoOrphanChapters(
+    index: ChapterIndex,
+    known: string[],
     projectId: string,
-    basis: VersionBasis,
-  ): Promise<void> {
-    if (basis.existed) return;
-    const orphans = (await this.ops.listDir(this.chapterDir(projectId), session)).filter(
-      (entry) => entry.type === "file" && entry.name.endsWith(".md"),
-    );
+  ): void {
+    const referenced = new Set(index.items.map((item) => item.id));
+    const orphans = known.filter((name) => !referenced.has(name));
     if (orphans.length === 0) return;
     throw new Error(
-      `chapters/index.json is missing but ${orphans.length} chapter file(s) exist under ` +
-        `${this.chapterDir(projectId)} (e.g. ${orphans[0].name}). Writing now would drop the whole ` +
-        "outline. Restore chapters/index.json (or move the .md files away), then retry.",
+      `${orphans.length} chapter file(s) under ${this.chapterDir(projectId)} are not listed in ` +
+        `chapters/index.json (e.g. ${orphans.slice(0, 3).join(", ")}). Writing this index would drop them ` +
+        "from the outline even though their text is still on disk. Repair chapters/index.json (or move " +
+        "those .md files away), then retry.",
     );
+  }
+
+  /** 目录里已存在的正文文件名（不含 `.md`），用于孤儿检查 */
+  private async chapterBodyIds(session: FsSession, projectId: string): Promise<string[]> {
+    const entries = await this.ops.listDir(this.chapterDir(projectId), session);
+    return entries
+      .filter((entry) => entry.type === "file" && entry.name.endsWith(".md"))
+      .map((entry) => entry.name.slice(0, -3));
   }
 
   private async writeChapterIndex(
@@ -1021,6 +1042,10 @@ export class NovelStore {
     index: ChapterIndex,
     basis: VersionBasis,
   ): Promise<void> {
+    // 所有写索引的路径都过这道闸：新索引里没有的正文文件一旦存在，就说明这次写入会
+    // 把它们从大纲里丢掉（索引被手改成 {}、并发重试留下的孤儿、旧实现丢章都长这样）。
+    const known = await this.chapterBodyIds(session, projectId);
+    this.assertNoOrphanChapters(index, known, projectId);
     await this.ops.writeJson(this.chapterIndexFile(projectId), index, session, basis);
   }
 
@@ -1040,7 +1065,14 @@ export class NovelStore {
     return chapters;
   }
 
-  /** 解析章节引用：id / 第N章 / 标题精确 / 标题唯一部分匹配 */
+  /**
+   * 解析章节引用：id / 标题（精确或唯一部分匹配）/ 第N章。
+   *
+   * **顺序很关键**：先 id、再**标题**、最后才按序号。反过来的话，一个形如 `3` 的引用
+   * 会被当成"第 3 章"——即使存在一章标题就叫「3」，或者模型把引用写成 `第3章 觉醒`
+   * 这种带尾随文字的形态时，用户拿到的是另一章的正文，而且**不报错**。
+   * 序号只认「没有任何标题匹配」这一种情况，并在歧义时报出来。
+   */
   async resolveChapterId(
     session: FsSession,
     projectId: string,
@@ -1050,18 +1082,38 @@ export class NovelStore {
     if (items.length === 0) {
       throw new Error(`project "${projectId}" has no chapters yet — create one first`);
     }
-    const wanted = ref.trim();
+    const wanted = (ref ?? "").trim();
+    if (wanted === "") {
+      throw new Error(
+        `chapter reference is empty. Pass a chapter id, its title, or "第N章". Available: ${items
+          .map((m, i) => `${i + 1}. ${m.title} (${m.id})`)
+          .join(", ")}`,
+      );
+    }
+
+    // 1) id 精确
     const byId = items.find((m) => m.id === wanted);
     if (byId) return byId;
-    if (/^\s*(第)?\d+(章|节|话|回)?\s*$/.test(wanted)) {
-      const n = Number(wanted.replace(/\D/g, ""));
-      if (n >= 1 && n <= items.length) return items[n - 1];
-    }
+
+    // 2) 标题精确 → 唯一部分匹配（在序号之前：标题是更强的意图表达）
     const lower = wanted.toLowerCase();
     const byTitle = items.find((m) => m.title.toLowerCase() === lower);
     if (byTitle) return byTitle;
     const partial = items.filter((m) => m.title.toLowerCase().includes(lower));
     if (partial.length === 1) return partial[0];
+
+    // 3) 序号：仅当没有任何标题命中时才允许（避免"标题叫 3 的章"被序号抢走）
+    const ordinal = /^\s*(?:第)?(\d+)(?:章|节|话|回)?\s*$/.exec(wanted);
+    if (ordinal !== null && partial.length === 0) {
+      const n = Number(ordinal[1]);
+      if (n >= 1 && n <= items.length) return items[n - 1];
+      throw new Error(
+        `chapter ordinal ${String(n)} is out of range (this project has ${String(items.length)} chapters). Available: ${items
+          .map((m, i) => `${i + 1}. ${m.title} (${m.id})`)
+          .join(", ")}`,
+      );
+    }
+
     throw new Error(
       partial.length > 1
         ? `chapter "${ref}" is ambiguous: ${partial.map((m) => m.title).join(", ")}`
@@ -1119,7 +1171,8 @@ export class NovelStore {
     if (!title) throw new Error("chapter title is required");
     return withStaleRetry(async () => {
       const { index, basis } = await this.readChapterIndexVersioned(session, projectId);
-      await this.assertIndexRecoverable(session, projectId, basis);
+      // 索引被手改坏（`{}`/`[]`/`null`）时的保护不在这里，而在 writeChapterIndex 的孤儿检查里：
+      // 那样无论从哪条路径写索引都拦得住，不依赖调用方记得先调一次。
       const id = uid().replace(/-/g, "").slice(0, 10);
       const position =
         input.position === undefined || input.position < 1
@@ -1161,7 +1214,16 @@ export class NovelStore {
     });
   }
 
-  /** 覆写章节正文；调用方已有正文基准时传进来，避免「读-改-写」窗口被并发覆盖 */
+  /**
+   * 覆写章节正文（`action=write` 的落盘口）。
+   *
+   * **没有外部基准时，自己先读一次拿到基准**：`action=write` 是"整体替换"，
+   * 而它的典型用法是「先 read 让模型看到全文 → 模型重写 → write 回来」，那中间有一个
+   * 跨工具调用的窗口——用户或另一个会话在这段时间里直接编辑正文（README 就是这么建议的）
+   * 就会被静默覆盖，而且正文没有历史可恢复。
+   * 收不进单次调用（模型看不见版本号），但至少把窗口从「两次调用之间」缩到「一次调用内」：
+   * 读到的版本若在写入前被改过，CAS 会失败并让调用方重试，而不是无声覆盖。
+   */
   async writeChapterBody(
     session: FsSession,
     projectId: string,
@@ -1170,11 +1232,12 @@ export class NovelStore {
     expected?: VersionBasis,
   ): Promise<Chapter> {
     const meta = await this.patchChapter(session, projectId, chapterId, () => {});
+    const basis = expected ?? (await this.readChapterBodyVersioned(session, projectId, chapterId)).basis;
     await this.ops.writeText(
       this.chapterFile(projectId, chapterId),
       content,
       session,
-      expected,
+      basis,
     );
     return { ...meta, content, words: countWords(content) };
   }
@@ -1237,7 +1300,10 @@ export class NovelStore {
     position: "before" | "after",
   ): Promise<ChapterMeta[]> {
     return withStaleRetry(async () => {
-      const items = await this.listChapterMetas(session, projectId);
+      // payload 与 CAS 基准必须来自**同一次读**：分两次读的话，基准是在 payload 之后取的，
+      // 于是并发建章/改名落在两次读之间时 CAS 必然通过 → 那边的新章节被这份旧列表静默覆盖。
+      const { index, basis } = await this.readChapterIndexVersioned(session, projectId);
+      const items = [...index.items].sort((a, b) => a.sortOrder - b.sortOrder);
       const reordered = computeReorder(items, chapterId, targetId, position);
       if (!reordered) {
         const available = items.map((m) => `${m.title} (${m.id})`).join(", ");
@@ -1245,7 +1311,6 @@ export class NovelStore {
           `cannot move chapter: "${chapterId}" → ${position} "${targetId}". Available: ${available}`,
         );
       }
-      const { basis } = await this.readChapterIndexVersioned(session, projectId);
       await this.writeChapterIndex(session, projectId, { items: reordered }, basis);
       return reordered;
     });
@@ -1298,11 +1363,17 @@ export class NovelStore {
   async listCharactersDiagnosed(
     session: FsSession,
     projectId: string,
-  ): Promise<{ characters: StoredCharacter[]; broken: { file: string; error: string }[] }> {
+  ): Promise<{
+    characters: StoredCharacter[];
+    broken: { file: string; error: string }[];
+    /** 每个角色卡文件的读取版本，供「读-改-写」当 CAS 基准（键为文件名） */
+    bases: Map<string, VersionBasis>;
+  }> {
     const dir = this.charactersDir(projectId);
     const entries = await this.ops.listDir(dir, session);
     const characters: StoredCharacter[] = [];
     const broken: { file: string; error: string }[] = [];
+    const bases = new Map<string, VersionBasis>();
     for (const entry of entries) {
       if (entry.type !== "file" || !entry.name.endsWith(".json")) continue;
       const read = await this.ops.readJsonOrDiagnose<StoredCharacter>(
@@ -1313,11 +1384,13 @@ export class NovelStore {
         broken.push({ file: `${dir}/${entry.name}`, error: read.error });
         continue;
       }
+      bases.set(entry.name, read.basis);
       if (read.value) characters.push(read.value);
     }
     return {
       characters: characters.sort((a, b) => a.createdAt - b.createdAt),
       broken,
+      bases,
     };
   }
 
@@ -1406,15 +1479,21 @@ export class NovelStore {
     characterId: string,
     patch: Partial<Pick<StoredCharacter, "name" | "description" | "personality" | "scenario" | "active">>,
   ): Promise<StoredCharacter> {
-    const characters = await this.listCharacters(session, projectId);
-    const character = characters.find((c) => c.id === characterId);
-    if (!character) throw new Error(`character not found: ${characterId}`);
     if (patch.name !== undefined && !patch.name.trim()) {
       throw new Error("character name cannot be empty");
     }
-    const updated: StoredCharacter = { ...character, ...patch };
-    await this.ops.writeJson(this.characterFile(projectId, characterId), updated, session);
-    return updated;
+    // 「读-改-写」必须带 CAS 基准：两个会话（比如面板与模型）同时改同一张卡时，
+    // 不带基准的写入会把对方的改动静默覆盖。这里整段套重试，冲突就重读再改一次。
+    return withStaleRetry(async () => {
+      const { characters, bases } = await this.listCharactersDiagnosed(session, projectId);
+      const character = characters.find((c) => c.id === characterId);
+      if (!character) throw new Error(`character not found: ${characterId}`);
+      const updated: StoredCharacter = { ...character, ...patch };
+      const file = this.characterFile(projectId, characterId);
+      const basis = bases.get(`${characterId}.json`);
+      await this.ops.writeJson(file, updated, session, basis);
+      return updated;
+    });
   }
 
   async deleteCharacter(
@@ -1473,7 +1552,9 @@ export class NovelStore {
     const chapters = await this.listChapters(session, projectId);
     const text = buildNovelDocument(project, chapters, format);
     const path = `${this.exportsDir(projectId)}/${safeName(project.title)}.${format}`;
-    await this.ops.writeText(path, text, session);
+    // 不覆盖：导出文件名是固定的，再导一次就抹掉上一份——用户可能已经在那份上改过。
+    // 与角色卡导出 PNG（writeBytes 同样默认拒绝覆盖）保持同一套规矩。
+    await this.ops.writeText(path, text, session, undefined, false);
     return {
       path,
       bytes: Buffer.byteLength(text, "utf8"),

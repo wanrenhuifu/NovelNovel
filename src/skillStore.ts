@@ -279,7 +279,13 @@ export class SkillStore {
     return skill;
   }
 
-  /** 导出成技能包，便于分享。默认落在 <dataDir>/skillpacks/ 下 */
+  /**
+   * 导出成技能包，便于分享。默认落在 `<dataDir>/skillpacks/` 下。
+   *
+   * **不覆盖已存在的文件**：`out_path` 是调用方（模型）可控的，默认覆盖意味着
+   * `out_path=<工作区里任意 .json>` 就能用一份技能包把 project.json / chapters/index.json
+   * 之类的数据文件无声盖掉，而且工具还报成功。与角色卡导出 PNG、正文导出同一套规矩。
+   */
   async exportPack(
     session: FsSession,
     ref: string,
@@ -288,7 +294,7 @@ export class SkillStore {
     const skill = await this.resolveSkill(session, ref);
     const pack = await this.asPack([skill], session);
     const path = outPath?.trim() || join(this.dataDir, "skillpacks", `${skill.name}.json`);
-    await this.ops.writeJson(path, pack, session);
+    await this.ops.writeJson(path, pack, session, undefined, false);
     return { pack, path: (await this.ops.resolve(path, session)).displayPath };
   }
 }

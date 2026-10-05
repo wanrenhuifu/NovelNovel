@@ -6,7 +6,8 @@
  * 路径仍由 ctx.fs.resolve + processPath 得出（解析口径与沙箱一致，且限定在项目目录内）。
  */
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative } from "node:path";
 import type {
   Context,
   FsDirEntry,
@@ -17,6 +18,20 @@ import type {
   SandboxPolicyService,
   ToolRunContext,
 } from "./contract";
+
+/**
+ * realpath，失败返回 undefined。
+ *
+ * 失败是**正常情况**：目标可能还不存在（新导出文件）、路径可能不可访问。
+ * 调用方按「取不到就继续往上找祖先」处理，而不是把它当成错误。
+ */
+function safeRealpath(path: string): string | undefined {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return undefined;
+  }
+}
 
 export interface FsSession {
   /** 会话工作目录：相对路径的解析基准，也是沙箱判定边界 */
@@ -177,18 +192,22 @@ export class FsOps {
    * 现场构造意图。这个区别是**并发安全的关键**：现场取版本时，读-改-写窗口内的并发改动
    * 会因为「基准总是最新的」而被静默覆盖；传真值才会在冲突时失败（fail-fast）。
    *
-   * 两种情况都满足 fs-local 的「必须先读再覆盖」约束：文件已存在却没有基准时用
-   * replaceIfVersion（要求先被观察到），不存在则 createIfAbsent（禁止覆盖）。
+   * `overwrite: false` 用于「产出物」类写入（导出文件）：目标已存在就让写入**失败**，
+   * 而不是无声抹掉用户可能已经改过的导出件。走 `createIfAbsent` 的语义天然满足
+   * fs-local 的「必须先读再覆盖」约束（它本来就是"禁止覆盖"）。
    */
   async writeText(
     path: string,
     content: string,
     session: FsSession,
     expected?: VersionBasis,
+    overwrite = true,
   ): Promise<void> {
     const target = await this.resolve(path, session);
     let intent: FsWriteIntent;
-    if (expected !== undefined) {
+    if (!overwrite) {
+      intent = { kind: "createIfAbsent" };
+    } else if (expected !== undefined) {
       intent =
         expected.existed && expected.version !== undefined
           ? { kind: "replaceIfVersion", version: expected.version }
@@ -222,8 +241,9 @@ export class FsOps {
     value: unknown,
     session: FsSession,
     expected?: VersionBasis,
+    overwrite = true,
   ): Promise<void> {
-    await this.writeText(path, `${JSON.stringify(value, null, 2)}\n`, session, expected);
+    await this.writeText(path, `${JSON.stringify(value, null, 2)}\n`, session, expected, overwrite);
   }
 
   /** 列目录；目录不存在返回 []（首次使用时项目目录尚未创建） */
@@ -237,6 +257,13 @@ export class FsOps {
   /**
    * 二进制写入与删除走 node:fs（ctx.fs 没有这两种能力），因此**不受沙箱策略约束**。
    * 为避免插件成为绕过沙箱的写/删通道，这里显式要求目标落在会话工作目录内。
+   *
+   * **必须解析符号链接**：`ctx.fs.contains` 是纯字符串判定（真品 fs-local 用的是
+   * `relative(processPath(parent), processPath(child))`，不做 realpath）。因此工作区内一个
+   * 指向外面的链接/junction，会让字符串判定认为"在里面"，而 node:fs 的写入/删除**跟随链接**
+   * 落到工作区外——那正是整个插件唯一的越界写/删通道。
+   * 所以这里对**父目录**做 realpath 再判一次：父目录是最深的存在祖先（文件可能还不存在），
+   * 只有它的真实位置仍在工作区内才放行。
    */
   private async assertInsideWorkspace(
     target: FsTarget,
@@ -245,12 +272,39 @@ export class FsOps {
     session: FsSession,
   ): Promise<void> {
     const root = await this.resolve(session.cwd, session);
-    if (this.ctx.fs.contains(root, target)) return;
+    const inside =
+      this.ctx.fs.contains(root, target) &&
+      (await this.realParentInsideWorkspace(this.ctx.fs.processPath(root), target));
+    if (inside) return;
     throw new Error(
-      `refusing to ${action} "${display}": it is outside the workspace (${root.displayPath}). ` +
+      `refusing to ${action} "${display}": it resolves outside the workspace (${root.displayPath}) ` +
+        "(either the path escapes, or a symlink/junction along it points outside). " +
         "Binary writes and deletions use node:fs on purpose (ctx.fs cannot do them) and are therefore " +
         "not fenced by the sandbox, so this plugin keeps them inside the workspace.",
     );
+  }
+
+  /**
+   * 目标的最深存在祖先（realpath 后）是否仍在工作区内。
+   *
+   * 逐级向上找工作区内的第一个真实存在的祖先：命中即用它做 realpath 判定；
+   * 一直找不到（父目录整条都不存在）时放行——那种情况下没有链接可跟随。
+   */
+  private async realParentInsideWorkspace(rootHostPath: string, target: FsTarget): Promise<boolean> {
+    const realRoot = safeRealpath(rootHostPath);
+    if (realRoot === undefined) return true; // 连工作区都解析不了，交给上层的 contains 结论
+
+    let dir = dirname(this.ctx.fs.processPath(target));
+    for (;;) {
+      const real = safeRealpath(dir);
+      if (real !== undefined) {
+        const rel = relative(realRoot, real);
+        return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+      }
+      const parent = dirname(dir);
+      if (parent === dir) return true; // 到根都没有存在的祖先
+      dir = parent;
+    }
   }
 
   /** 删除文件（ctx.fs 无删除能力，走 node:fs；路径由 ctx.fs 解析并限定在工作区内） */

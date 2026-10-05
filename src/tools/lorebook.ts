@@ -43,7 +43,12 @@ export function registerLorebookTool({ ctx, store, defineTool }: ToolDeps): void
         },
         toggle: {
           type: "boolean",
-          description: "Set true to flip the entry's enabled state (action=update).",
+          description:
+            "Set true to flip the entry's enabled state (action=update). Do not combine with enabled.",
+        },
+        confirm: {
+          type: "boolean",
+          description: "Must be true to remove an entry. Ask the user first.",
         },
       },
       output: { schema: TEXT_OUTPUT, render: textRender },
@@ -118,6 +123,14 @@ export function registerLorebookTool({ ctx, store, defineTool }: ToolDeps): void
         }
 
         if (args.action === "remove") {
+          // 与项目/章节/角色卡/技能一致：删除必须显式确认。词条是用户手写的设定，
+          // 一次幻觉调用就会永久删掉（store 里是整份重写，没有回收站）。
+          if (args.confirm !== true) {
+            throw new Error(
+              `Removing lorebook entry 「${args.entry.trim()}」 deletes it from lorebook.json. ` +
+                "Ask the user first, then pass confirm=true.",
+            );
+          }
           const removed = await store.removeLoreEntry(session, projectId, args.entry);
           return {
             action: args.action,
@@ -133,6 +146,13 @@ export function registerLorebookTool({ ctx, store, defineTool }: ToolDeps): void
           if (args.content !== undefined) patch.content = args.content;
           if (args.enabled !== undefined) patch.enabled = args.enabled;
           if (args.toggle === true) patch.toggle = true;
+          // 同时给会「后写的赢」：原本启用时 enabled=true + toggle=true 最终是**禁用**，
+          // 而返回文案还报成功。两者语义重叠，直接要求二选一。
+          if (patch.enabled !== undefined && patch.toggle !== undefined) {
+            throw new Error(
+              "pass either enabled=<bool> or toggle=true, not both — they conflict (toggle flips the current value).",
+            );
+          }
           const fields = Object.keys(patch);
           requireFields(
             fields,

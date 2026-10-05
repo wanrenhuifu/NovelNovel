@@ -19,9 +19,21 @@ declare module "node:fs/promises" {
   export function readdir(path: string): Promise<string[]>;
 }
 
+declare module "node:fs" {
+  /**
+   * `realpathSync.native`：把符号链接/junction 解析成真实路径。
+   * 只用于 `assertInsideWorkspace` 的第二道判定——`ctx.fs.contains` 是纯字符串比较，
+   * 工作区内的链接会骗过它，而 node:fs 的读写是跟随链接的。
+   */
+  export const realpathSync: { native(path: string): string };
+}
+
 declare module "node:path" {
   export function dirname(path: string): string;
   export function join(...parts: string[]): string;
+  export function isAbsolute(path: string): boolean;
+  /** 第二个参数相对第一个参数的路径（同盘符时才是相对形式） */
+  export function relative(from: string, to: string): string;
 }
 
 declare module "node:url" {

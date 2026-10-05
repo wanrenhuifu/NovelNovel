@@ -863,7 +863,9 @@ const orphanIndexBackup = readFileSync(orphanIndex, "utf8");
 rmSync(orphanIndex, { force: true });
 await assert.rejects(
   () => call("novel_chapter", { action: "create", title: "第二章" }),
-  /index\.json is missing/,
+  // 判据是内容层面的「目录里有索引未引用的 .md」，所以索引缺失与
+  // 「索引被改成 {} 后能解析但语义为空」这两类走的是同一条错误
+  /not listed in\s+chapters\/index\.json/,
   "有正文却没有索引时必须拒绝写入",
 );
 // 空目录里缺索引是正常的（首次建章），不该被拦
@@ -873,6 +875,8 @@ assert.equal(emptyCreate.action, "create", "空目录里没有索引时应当允
 assert.ok(emptyProject.details.project_id);
 writeFileSync(orphanIndex, orphanIndexBackup, "utf8");
 ok("a missing chapter index with existing prose refuses to write");
+writeFileSync(orphanIndex, orphanIndexBackup, "utf8");
+ok("a corrupted-but-parsable chapter index also refuses to write");
 
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 

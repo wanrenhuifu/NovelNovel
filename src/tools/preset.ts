@@ -47,6 +47,10 @@ export function registerPresetTool({ ctx, store, defineTool }: ToolDeps): void {
           description:
             "Context template replacing the default setting block. Supports {{#if var}}/{{else}}/{{trim}} and the variables title, synopsis, worldbuilding, system, description, personality, scenario, wiBefore.",
         },
+        confirm: {
+          type: "boolean",
+          description: "Must be true to remove a preset. Ask the user first.",
+        },
       },
       output: { schema: TEXT_OUTPUT, render: textRender },
       isConcurrencySafe: (args) => args.action === "list",
@@ -178,6 +182,13 @@ export function registerPresetTool({ ctx, store, defineTool }: ToolDeps): void {
         }
 
         if (args.action === "remove") {
+          // 与项目/章节/角色卡/技能/词条一致：删除必须显式确认
+          if (args.confirm !== true) {
+            throw new Error(
+              `Removing preset 「${found.name}」 deletes it from presets.json. ` +
+                "Ask the user first, then pass confirm=true.",
+            );
+          }
           const presets = await store.readPresets(session, projectId);
           const removed = await store.removePreset(session, projectId, found.id);
           return {
