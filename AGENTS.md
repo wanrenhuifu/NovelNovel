@@ -48,6 +48,7 @@ npm run test:words                  # 字数缓存：改文件后字数仍重算
 npm run test:lifecycle              # 生命周期：重复挂载会抛错、卸载后干净、能重新挂载
 npm run test:prompt                 # 系统提示词段：文本内容 + 组装位置 + 卸载后不留残留
 npm run test:skills                 # 自带技能：中文触发词必须在 description 里（whenToUse 不进提示词）
+npm run test:bundle-runs            # 执行交付产物本身：跑 lib/client.js 的 factory 并调 apply，断言注册了两个插槽
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）

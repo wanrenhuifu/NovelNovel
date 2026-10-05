@@ -62,6 +62,7 @@
     "test:lifecycle": "node scripts/verify-lifecycle.mjs",
     "test:prompt": "node scripts/verify-prompt-section.mjs",
     "test:skills": "node scripts/verify-skills.mjs",
+    "test:bundle-runs": "node scripts/verify-client-bundle-runs.mjs",
     "test:render": "node scripts/test-panel-render.mjs",
     "test:interaction": "node scripts/test-panel-interaction.mjs",
     "test:contract": "node scripts/verify-doc-contract.mjs",
