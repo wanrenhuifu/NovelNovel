@@ -327,6 +327,8 @@ npm run test:interaction # 面板交互：jsdom 真挂载，点击与键盘事�
 npm run test:routes     # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
 npm run test:paging     # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
 npm run test:words      # 字数缓存：直接改文件后字数仍会重算 + 缓存真的省调用
+npm run test:lifecycle  # 生命周期：重复挂载会抛错、卸载后干净、能重新挂载（HMR 路径）
+npm run test:prompt     # 系统提示词段：文本内容 + 组装位置 + 卸载后不留残留
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
 

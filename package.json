@@ -58,6 +58,8 @@
     "test:routes": "node scripts/verify-web-routes.mjs",
     "test:paging": "node scripts/verify-chapter-paging.mjs",
     "test:words": "node scripts/verify-word-cache.mjs",
+    "test:lifecycle": "node scripts/verify-lifecycle.mjs",
+    "test:prompt": "node scripts/verify-prompt-section.mjs",
     "test:render": "node scripts/test-panel-render.mjs",
     "test:interaction": "node scripts/test-panel-interaction.mjs",
     "test:contract": "node scripts/verify-doc-contract.mjs",
