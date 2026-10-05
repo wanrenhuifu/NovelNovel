@@ -60,9 +60,16 @@ function fromError(ctx: Context, error: unknown): Response {
   const mapped = code === undefined ? undefined : CODE_STATUS[code];
   if (mapped !== undefined) return failure(mapped.code, message, mapped.status);
 
-  // 兼容尚未带 code 的既有错误：只认最强的几条特征，不做宽泛正则
-  if (/^project ".+" not found/.test(message)) return failure("not_found", message, 404);
+  // 兼容尚未带 code 的既有错误：只认最强的几条特征，不做宽泛正则。
+  // `not found` 这条**必须覆盖所有实体**：章节找不到的文案是 `chapter "…" not found. Available: …`，
+  // 早先只写了 `project` 开头，于是"章节不存在"被报成 500 内部错误——
+  // 用户看到的是"插件内部出错了"，真相只是这一章不在。
+  if (/^(project|chapter|character|entry|preset) ".+" not found/.test(message)) {
+    return failure("not_found", message, 404);
+  }
   if (/has no chapters yet/.test(message)) return failure("no_chapters", message, 404);
+  if (/has no character cards yet/.test(message)) return failure("not_found", message, 404);
+  if (/has no presets yet/.test(message)) return failure("not_found", message, 404);
   if (/is ambiguous:/.test(message)) return failure("ambiguous", message, 409);
   if (/pass project=<id> explicitly/.test(message)) return failure("needs_project", message, 400);
   if (/id cannot be used as a file name/.test(message)) return failure("bad_index", message, 422);

@@ -55,6 +55,7 @@
     "test:chapter-guard": "node scripts/verify-chapter-id-guard.mjs",
     "test:race": "node scripts/verify-concurrency.mjs",
     "test:edge": "node scripts/verify-edge-cases.mjs",
+    "test:routes": "node scripts/verify-web-routes.mjs",
     "test:render": "node scripts/test-panel-render.mjs",
     "test:contract": "node scripts/verify-doc-contract.mjs",
     "test:package": "node scripts/verify-package.mjs",
