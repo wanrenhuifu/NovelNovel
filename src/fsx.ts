@@ -127,14 +127,20 @@ export class FsOps {
   }
 
   /**
-   * 拒绝在"没有真实工作目录"的会话里做任何写入。
+   * 拒绝在"没有真实工作目录"的会话里做任何写入，并在动手前检查取消信号。
    *
-   * 这类会话的 cwd 是 `process.cwd()` 兜底来的，而桌面端的进程工作目录是**应用安装目录**：
-   * 写入会静默落进那里，用户的工作区里什么都没有，且那个目录不在 Web 面板的白名单里
-   * （用户既看不到也选不中）。数据落错地方比直接报错糟得多，所以这里 fail fast。
-   * 触发条件：工具执行上下文里缺 `agent.session`，或命令处理器拿不到会话。
+   * 取消这条：多步写入序列里**不可逆的那一步**（node:fs 的 rm、头像 writeFile）本来完全不理会
+   * 取消，而紧随其后的 `ctx.fs` 写入会在发布前被 abort 拒掉——于是"按停止"会稳定地制造半步状态
+   * （正文删了索引没改、头像写了卡片没写），工具只回一句 aborted，不告诉调用方哪几步已落地。
+   * 至少在做任何一步之前先看信号，别让"取消"成为不一致的触发器。
+   *
+   * 无工作区这条见 `ephemeral` 的说明：cwd 是 `process.cwd()` 兜底来的，写入会静默落进
+   * 应用安装目录而不是用户工作区，数据落错地方比直接报错糟得多，所以 fail fast。
    */
   private assertWritable(session: FsSession): void {
+    if (session.signal?.aborted === true) {
+      throw Object.assign(new Error("cancelled before writing"), { code: "NN_ABORTED" });
+    }
     if (session.ephemeral !== true) return;
     throw new Error(
       "refusing to write: this call has no session workspace, so the data would land in the " +

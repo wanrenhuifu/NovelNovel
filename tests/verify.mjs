@@ -917,6 +917,38 @@ const bareRead = await callWith(bareExec, "novel_project", { action: "list" }).t
 assert.equal(bareRead, "ok", "无会话的读操作应当照常工作");
 ok("a write with no session workspace is refused instead of landing in process.cwd()");
 
+// ── 已取消的调用不该落地任何写入 ──────────────────────────────────
+// 实测：正常分发链路下 `ctx.fs.resolve` 自己就会拒绝（"resolve aborted"），所以取消不会落地。
+// 插件侧的 `assertWritable` 是**纵深防御**——直接调 definition.execute 的调用方（以及将来
+// 某个不经过 resolve 的写路径）仍会被它挡住。这条用例两种拒绝都接受，但必须确认"什么都没落地"。
+step("cancelled writes are refused");
+const cancelled = new AbortController();
+cancelled.abort();
+const cancelledExec = {
+  ...execFor("novel_chapter", {}),
+  signal: cancelled.signal,
+};
+const cancelledWrite = await callWith(cancelledExec, "novel_chapter", {
+  action: "create",
+  title: "取消后不该建出来",
+}).then(
+  () => "成功了（没拦住！）",
+  (error) => String(error?.message ?? error),
+);
+assert.match(
+  cancelledWrite,
+  /cancelled before writing|aborted/i,
+  "已取消的写入应被拒绝（harness 的 resolve aborted 或插件自己的 cancelled before writing）",
+);
+// 用正常会话读回来确认"什么都没落地"（复用已取消的 exec 会在列目录时就 abort）
+const afterCancel = await call("novel_chapter", { action: "list" });
+const cancelledTitles = afterCancel.details.chapters.map((c) => c.title);
+assert.ok(
+  !cancelledTitles.includes("取消后不该建出来"),
+  `被取消的章节不该出现在列表里（实际：${cancelledTitles.join(" / ")}）`,
+);
+ok("a write on an already-aborted signal lands nothing");
+
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 
 step("plugin unload");
