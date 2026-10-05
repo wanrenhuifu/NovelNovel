@@ -17,17 +17,30 @@ import { build } from "esbuild";
 const PRIMITIVES_SHIM = `
 import { createElement as h } from "react";
 
+/** 把 props 里的**函数**（事件处理器）原样透传下去——丢掉 onClick 会让交互测试出现假失败 */
+function handlers(props) {
+  const out = {};
+  for (const [key, value] of Object.entries(props)) {
+    if (typeof value === "function" && key.startsWith("on")) out[key] = value;
+  }
+  return out;
+}
+
 export function Button(props) {
-  return h("button", { "data-prim": "button", "data-size": props.size ?? "" }, props.children);
+  return h(
+    "button",
+    { ...handlers(props), "data-prim": "button", "data-size": props.size ?? "" },
+    props.children,
+  );
 }
 export function Tag(props) {
-  return h("span", { "data-prim": "tag" }, props.children);
+  return h("span", { ...handlers(props), "data-prim": "tag" }, props.children);
 }
 export function IconListPenOutlineRegular(props) {
   return h("svg", { "data-prim": "icon", "data-size": String(props.size ?? "") });
 }
 export function MarkdownText(props) {
-  return h("div", { "data-prim": "markdown" }, props.text ?? props.children);
+  return h("div", { ...handlers(props), "data-prim": "markdown" }, props.text ?? props.children);
 }
 `;
 

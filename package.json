@@ -45,7 +45,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc -p .",
-    "test": "node scripts/test-card-import.mjs && node scripts/test-card-export.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs && node scripts/test-domain-utils.mjs && node scripts/test-client-normalize.mjs && node scripts/test-client-logic.mjs && node scripts/test-panel-render.mjs && node scripts/test-client-manifest.mjs && node scripts/test-client-bundle.mjs",
+    "test": "node scripts/test-card-import.mjs && node scripts/test-card-export.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs && node scripts/test-domain-utils.mjs && node scripts/test-client-normalize.mjs && node scripts/test-client-logic.mjs && node scripts/test-panel-render.mjs && node scripts/test-panel-interaction.mjs && node scripts/test-client-manifest.mjs && node scripts/test-client-bundle.mjs",
     "test:guard": "node scripts/test-harness-guard.mjs",
     "test:dsh": "node scripts/verify-dsh.mjs",
     "test:compose": "node scripts/verify-client-compose.mjs",
@@ -57,6 +57,7 @@
     "test:edge": "node scripts/verify-edge-cases.mjs",
     "test:routes": "node scripts/verify-web-routes.mjs",
     "test:render": "node scripts/test-panel-render.mjs",
+    "test:interaction": "node scripts/test-panel-interaction.mjs",
     "test:contract": "node scripts/verify-doc-contract.mjs",
     "test:package": "node scripts/verify-package.mjs",
     "test:perf": "node scripts/probe-dsh-perf.mjs",
@@ -83,6 +84,7 @@
     "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
     "@types/react": "^18.3.12",
     "esbuild": "^0.25.12",
+    "jsdom": "25.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.8.3"
