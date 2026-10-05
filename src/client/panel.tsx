@@ -12,15 +12,20 @@ import type { ChapterSummary, ProjectDetail } from "./api";
 import { usePanel } from "./state";
 import { useChapterKeys } from "./useChapterKeys";
 
+/** detail 为 null 时的占位：复用同一个数组，避免每次渲染都新建（会让 effect 反复重建） */
+const NO_CHAPTERS: ChapterSummary[] = [];
+
 export function NovelPanel(): ReactNode {
   const { state, actions } = usePanel();
-  const { detail, chapter, projects, activeId, error, loading, chapterLoading } = state;
+  const { detail, chapter, projects, activeId, error, loading, chapterLoading, chapterId } = state;
   const active = projects.find((p) => p.id === activeId) ?? null;
 
-  useChapterKeys(detail?.chapters ?? [], actions.selectChapter);
+  // 空态复用同一个常量数组：每次渲染都造新数组会让键盘监听的 effect 反复重建
+  const chapters = detail?.chapters ?? NO_CHAPTERS;
+  const { rootRef } = useChapterKeys(chapters, chapterId, actions.selectChapter);
 
   return (
-    <div className="nnv-root">
+    <div className="nnv-root" ref={rootRef} tabIndex={-1}>
       <header className="nnv-header">
         <span className="nnv-brand">
           <IconListPenOutlineRegular size={15} />
@@ -45,12 +50,20 @@ export function NovelPanel(): ReactNode {
         {projects.length > 1 ? (
           <ProjectSwitcher projects={projects} activeId={activeId} onSelect={actions.selectProject} />
         ) : null}
-        <Button size="small" onClick={actions.refresh}>
+        <Button size="sm" onClick={actions.refresh}>
           刷新
         </Button>
       </header>
 
       {error !== null ? <div className="nnv-error">{error}</div> : null}
+
+      {/* 读不出来的作品必须点名：否则用户会以为"没有作品"而去新建，真正的问题是他手改坏了一个文件 */}
+      {state.unreadable.length > 0 ? (
+        <div className="nnv-error">
+          有 {String(state.unreadable.length)} 个作品目录读不出来（已跳过）：
+          {state.unreadable.map((u) => `\n· ${u.id} —— ${u.error}`).join("")}
+        </div>
+      ) : null}
 
       {loading && detail === null && error === null ? (
         <Skeleton />
@@ -60,7 +73,7 @@ export function NovelPanel(): ReactNode {
         <div className="nnv-columns">
           <ChapterList
             chapters={detail.chapters}
-            activeId={chapter?.id ?? null}
+            selectedId={chapterId}
             onSelect={actions.selectChapter}
           />
           <div className="nnv-body">
@@ -100,11 +113,12 @@ function ProjectSwitcher({
 
 function ChapterList({
   chapters,
-  activeId,
+  selectedId,
   onSelect,
 }: {
   chapters: ChapterSummary[];
-  activeId: string | null;
+  /** 用户选中的章节 id（不是"已加载"的那个：切章期间高亮应当立刻跟随） */
+  selectedId: string | null;
   onSelect: (id: string) => void;
 }): ReactNode {
   // 体量条按最长章节归一化：不写死"多少字算长"
@@ -123,9 +137,8 @@ function ChapterList({
             key={c.id}
             type="button"
             className="nnv-row"
-            data-selected={c.id === activeId}
-            data-chapter-id={c.id}
-            title={c.tags.length > 0 ? c.tags.join(" · ") : undefined}
+            data-selected={c.id === selectedId}
+            title={asArray(c.tags).length > 0 ? asArray(c.tags).join(" · ") : undefined}
             onClick={() => {
               onSelect(c.id);
             }}
@@ -194,7 +207,7 @@ function ChapterView({
           {index >= 0 ? <Tag>第 {String(index + 1)} 章</Tag> : null}
           <Tag>{formatWords(chapter.words)}</Tag>
           {current !== undefined
-            ? current.tags.map((t) => <Tag key={t}>{t}</Tag>)
+            ? asArray(current.tags).map((t) => <Tag key={t}>{t}</Tag>)
             : null}
           {participating.length > 0 ? (
             <span className="nnv-chip" data-tone="brand">
@@ -290,18 +303,30 @@ function countActive(detail: ProjectDetail): number {
  * 估算本章会命中多少条词条：与 `domain/prompt.ts` 的 selectLoreEntries 同语义——
  * 无关键词的词条常驻注入，有关键词的按包含关系匹配。这里只用于显示一个数字，
  * 所以不做全半角归一化（真正的注入判定在宿主侧）。
+ *
+ * 字段一律走 asString/asArray 兜底：`lorebook.json` 是给人手改的，
+ * 少写一个 keys 就抛 TypeError 的话，整块面板会被首方错误边界接住变成空白。
  */
 function matchEntries(detail: ProjectDetail, content: string): number {
   const haystack = content.toLowerCase();
   return detail.lorebook.filter((entry) => {
     if (!entry.enabled) return false;
-    const keys = entry.keys
+    const keys = asString(entry.keys)
       .split(/[,，]/)
       .map((k) => k.trim().toLowerCase())
       .filter((k) => k !== "");
     if (keys.length === 0) return true;
     return keys.some((k) => haystack.includes(k));
   }).length;
+}
+
+/** 落盘 JSON 是给人手改的：类型上非空、实际可能缺字段，所以读之前先兜底 */
+function asArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function formatWords(words: number): string {

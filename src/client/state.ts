@@ -10,6 +10,7 @@
  */
 import * as React from "react";
 import { ApiFailure, api, type ChapterDetail, type ProjectDetail, type ProjectSummary } from "./api";
+import { normalizeDetail } from "./normalize";
 
 export interface PanelState {
   loading: boolean;
@@ -20,6 +21,8 @@ export interface PanelState {
   activeId: string | null;
   detail: ProjectDetail | null;
   chapter: ChapterDetail["chapter"] | null;
+  /** 当前选中章节的 id：键盘导航按它定位，不去 DOM 里反查 */
+  chapterId: string | null;
 }
 
 export interface PanelActions {
@@ -37,6 +40,7 @@ const INITIAL: PanelState = {
   activeId: null,
   detail: null,
   chapter: null,
+  chapterId: null,
 };
 
 export const PanelContext = React.createContext<{ state: PanelState; actions: PanelActions }>({
@@ -50,10 +54,19 @@ export function usePanel(): { state: PanelState; actions: PanelActions } {
 
 export function usePanelStore(): { state: PanelState; actions: PanelActions } {
   const [state, setState] = React.useState<PanelState>(INITIAL);
-  /** 取数版本：每次发起请求自增，回调只在版本仍然最新时落地 */
+  /** 整份取数（作品→详情→首章）的版本号 */
   const version = React.useRef(0);
+  /** 单独切章请求的版本号，与 `version` 分开：两者互不取消对方 */
+  const chapterVersion = React.useRef(0);
+  /**
+   * 当前作品 id 的「最新值」。
+   * 事件处理器（点章节、键盘）必须读它而不是渲染闭包里的 state——
+   * 切作品是「立刻改 id + 异步取详情」，闭包里的值会滞后。见 selectChapter。
+   */
+  const activeIdRef = React.useRef<string | null>(null);
 
   const patch = React.useCallback((next: Partial<PanelState>) => {
+    if (next.activeId !== undefined) activeIdRef.current = next.activeId;
     setState((prev) => ({ ...prev, ...next }));
   }, []);
 
@@ -61,6 +74,9 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
   const load = React.useCallback(
     (keep?: { projectId?: string; chapterId?: string }) => {
       const token = ++version.current;
+      // 整份重取会让任何在飞的切章请求作废：否则它的慢响应会盖掉刚取回的首章，
+      // 还会让 chapterId 与 chapter 对不上（列表高亮 A、正文 B）
+      chapterVersion.current++;
       const stale = (): boolean => token !== version.current;
 
       void (async () => {
@@ -76,23 +92,32 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
             null;
           patch({ projects, unreadable: list.unreadable, activeId: active?.id ?? null, loading: false });
           if (active === null) {
-            patch({ detail: null, chapter: null });
+            patch({ detail: null, chapter: null, chapterId: null });
             return;
           }
 
           const detail = await api.readProject(undefined, active.id);
           if (stale()) return;
-          patch({ detail });
+          if (active.id !== activeIdRef.current) return; // 期间换了作品：这份详情已过期
+          // 归一化：落盘 JSON 是给人手改的，缺字段不该让整块面板被错误边界接走
+          const safe = normalizeDetail(detail);
+          if (safe === null) {
+            patch({ detail: null, chapter: null, chapterId: null, loading: false, error: "这个作品的 project.json 缺少必要字段，面板无法显示" });
+            return;
+          }
+          patch({ detail: safe });
 
-          const chapterId = keep?.chapterId ?? detail.chapters[0]?.id;
+          const chapterId = keep?.chapterId ?? safe.chapters[0]?.id;
           if (chapterId === undefined) {
-            patch({ chapter: null });
+            patch({ chapter: null, chapterId: null });
             return;
           }
           patch({ chapterLoading: true });
           const result = await api.readChapter(undefined, chapterId, active.id);
           if (stale()) return;
-          patch({ chapter: result.chapter, chapterLoading: false });
+          // 身份校验：期间若换了作品，这份结果属于上一本，丢掉
+          if (result.projectId !== activeIdRef.current) return;
+          patch({ chapter: result.chapter, chapterId: result.chapter.id, chapterLoading: false });
         } catch (error) {
           if (stale()) return;
           patch({ loading: false, chapterLoading: false, error: describe(error) });
@@ -107,25 +132,43 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
     load();
   }, [load]);
 
+  // 重连后一律失效：WebSocket 断开重连（或宿主重启）时，页面上留的是旧数据，
+  // 而此刻用户最需要的恰恰是自动重取。事件由首方的 connection 在 onConnected 时发出。
+  React.useEffect(() => {
+    const off = ctx.on("connection/reset", () => {
+      load();
+    });
+    return () => {
+      off();
+    };
+  }, [load]);
+
   const actions = React.useMemo<PanelActions>(
     () => ({
       refresh: () => load(state.activeId === null ? undefined : { projectId: state.activeId }),
       selectProject: (id: string) => {
-        patch({ activeId: id, detail: null, chapter: null });
+        patch({ activeId: id, detail: null, chapter: null, chapterId: null });
         load({ projectId: id });
       },
       selectChapter: (id: string) => {
-        const projectId = state.activeId;
+        // 作品 id 必须从 **ref** 读，不能从渲染闭包读：切作品是「立刻改 activeId +
+        // 异步取详情」，旧列表还挂在屏幕上时点它，闭包里的 activeId 已经是新作品，
+        // 会拿新作品去要旧章节——解析成功的话正文就串台了。
+        const projectId = activeIdRef.current;
         if (projectId === null) return;
-        const token = ++version.current;
-        patch({ chapterLoading: true, error: null });
+        // 章节请求用**自己的**版本号：不能借用 version，否则会把还在跑的 load()
+        // 判成过期而中途放弃（面板会卡在半加载状态）。
+        const token = ++chapterVersion.current;
+        patch({ chapterLoading: true, error: null, chapterId: id });
         void (async () => {
           try {
             const result = await api.readChapter(undefined, id, projectId);
-            if (token !== version.current) return;
-            patch({ chapter: result.chapter, chapterLoading: false });
+            if (token !== chapterVersion.current) return;
+            // 再校一次身份：期间若切了作品，这个响应属于上一本，丢掉
+            if (result.projectId !== activeIdRef.current) return;
+            patch({ chapter: result.chapter, chapterId: result.chapter.id, chapterLoading: false });
           } catch (error) {
-            if (token !== version.current) return;
+            if (token !== chapterVersion.current) return;
             patch({ chapterLoading: false, error: describe(error) });
           }
         })();
