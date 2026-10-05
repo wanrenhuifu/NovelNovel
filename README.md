@@ -321,6 +321,7 @@ npm run test:chapter-guard  # 章节 id 不能当路径段（越界 id 读不到
 npm run test:contract   # 文档契约：README 工具表承诺的 action 必须真实存在
 npm run test:package    # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册
 npm run test:render     # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
+npm run test:routes     # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
 
