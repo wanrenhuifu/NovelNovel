@@ -46,6 +46,13 @@ check("数字算一个词", countWords("第 3 章"), 3);
 check("扩展 B 区汉字按码点计 50 字", countWords("𠀋".repeat(50)), 50);
 check("扩展 B 区与常用汉字混合", countWords("𠀋长"), 2);
 check("英文标点也不计入", countWords("hello, world!"), 2);
+// 零宽连接符（U+200D）与变体选择符（U+FE0F）既不是标点也不是符号，不剥掉就会被当"词"：
+// 同一个 emoji 体系里 `👨‍👩‍👧` 报 2 个词而 `😀` 报 0 个，字数随 emoji 虚高。
+check("单个 emoji 不计词", countWords("😀"), 0);
+check("ZWJ 家庭 emoji 不计词（连接符不该被算成词）", countWords("👨‍👩‍👧"), 0);
+check("带变体选择符的爱心不计词", countWords("❤️"), 0);
+check("五个家庭 emoji 仍是 0 词", countWords("👨‍👩‍👧".repeat(5)), 0);
+check("emoji 夹在汉字里只算汉字", countWords("他说😀然后走了"), 6);
 
 console.log("--- selectLoreEntries ---");
 const entry = (over) => ({ id: "e", name: "n", keys: "", content: "内容", enabled: true, ...over });

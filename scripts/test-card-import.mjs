@@ -206,5 +206,69 @@ check("返回 character 主体", parsed.character.name, "林晚");
 check("返回 loreEntries", parsed.character !== undefined && parsed.loreEntries.length, 1);
 check("词条不含 id（由 store 生成）", "id" in (parsed.loreEntries[0] ?? { id: 0 }), false);
 
+// 7. 规格漂移：V2/V3 的判定必须看 `data` 形状，不能死认 spec 字面量。
+//    现实里的卡常见写法是只写 spec_version、把大小写写错、或省略 spec；死认字面量会把它们
+//    判成 V1：六个正文字段全变成库的哨兵字符串 "unknown"、character_book 整本丢失，且不报错。
+console.log("--- 规格漂移（缺 spec / 大小写 / 顶层世界书）---");
+
+const v2Body = {
+  name: "林晚",
+  description: "冷面刺客",
+  personality: "寡言",
+  first_mes: "你来了。",
+  character_book: { entries: [{ keys: ["影阁"], content: "林晚所属的杀手组织。" }] },
+};
+
+for (const [label, card] of [
+  ["只写 spec_version", { spec_version: "2.0", data: v2Body }],
+  ["spec 大小写不同", { spec: "chara_card_V2", spec_version: "2.0", data: v2Body }],
+  ["完全没有 spec", { data: v2Body }],
+]) {
+  const out = await parseCharacterBytes(
+    new TextEncoder().encode(JSON.stringify(card)),
+    "drift.json",
+    "application/json",
+  );
+  check(`${label} → 描述不是 "unknown"`, out.character.description, "冷面刺客");
+  check(`${label} → 开场白保留`, out.character.firstMes, "你来了。");
+  check(`${label} → 卡内世界书被提取`, out.loreEntries.length, 1);
+}
+
+// 世界书写在**顶层** character_book（库自己的 toSpecV2 认这个位置）
+{
+  const topLevel = {
+    spec: "chara_card_v2",
+    spec_version: "2.0",
+    character_book: { entries: [{ keys: ["血月"], content: "血月之夜祭司会现身。" }] },
+    data: { name: "祭司", description: "守夜人" },
+  };
+  const out = await parseCharacterBytes(
+    new TextEncoder().encode(JSON.stringify(topLevel)),
+    "top.json",
+    "application/json",
+  );
+  check("顶层 character_book 也被提取", out.loreEntries.length, 1);
+  check("顶层世界书的正文正确", out.loreEntries[0]?.content, "血月之夜祭司会现身。");
+  check("卡内条目计数包含顶层世界书", out.character.lorebookEntriesInCard, 1);
+}
+
+// 精简 V1 卡：库会把缺失字段填成哨兵 "unknown"，那不是内容，不能进提示词
+{
+  const minimal = await parseCharacterBytes(
+    new TextEncoder().encode(JSON.stringify({ name: "老张" })),
+    "min.json",
+    "application/json",
+  );
+  for (const [field, value] of [
+    ["description", minimal.character.description],
+    ["personality", minimal.character.personality],
+    ["scenario", minimal.character.scenario],
+    ["firstMes", minimal.character.firstMes],
+    ["mesExample", minimal.character.mesExample],
+  ]) {
+    check(`精简 V1 卡的 ${field} 不是哨兵 "unknown"`, value, "");
+  }
+}
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

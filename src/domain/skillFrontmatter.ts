@@ -92,7 +92,9 @@ export function parseSkillFile(text: string, source: string): ParsedSkillFile {
       modelInvocable: !bool("disable-model-invocation", false),
       userInvocable: bool("user-invocable", true),
     },
-    content: text.slice(match[0].length).trim(),
+    // 必须切 `body` 而不是原文 `text`：match 是在剥掉 BOM 的 body 上求出的，
+    // 切原文会整体偏移 1 个字符（平时被 trim 吃掉，frontmatter 后没有换行时就露出一个 "-"）。
+    content: body.slice(match[0].length).trim(),
   };
 }
 

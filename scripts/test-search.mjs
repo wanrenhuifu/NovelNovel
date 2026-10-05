@@ -122,5 +122,30 @@ check(
 const order = searchChapters([mk(1, "T", "一啊二啊三")], "啊");
 check("同章命中按出现顺序", order[0].pos < order[1].pos);
 
+// ---- 摘要不能切在代理对中间 ----
+// 摘要边界由"前后 N 个字符"算出来，emoji 占两个 UTF-16 码元，切中间会产出孤立代理
+// （渲染成 U+FFFD）。这里断言产出的文本里没有孤立代理。
+const loneSurrogate = (s) => {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+};
+const emojiText = (s) => s.segments.map((seg) => seg.text).join("");
+
+const emojiTitle = searchChapters([mk(1, "关键词", "abc" + "😀".repeat(19))], "关键词");
+check("标题命中的摘要不含孤立代理", !loneSurrogate(emojiText(emojiTitle[0])), JSON.stringify(emojiText(emojiTitle[0])));
+
+const emojiBody = searchChapters([mk(1, "T", "a" + "😀".repeat(20) + "b关键词")], "关键词");
+check("正文命中的摘要不含孤立代理", !loneSurrogate(emojiText(emojiBody[0])), JSON.stringify(emojiText(emojiBody[0])));
+check("命中片段本身完整", emojiBody[0].segments.some((s) => s.hit && s.text.includes("关键词")));
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

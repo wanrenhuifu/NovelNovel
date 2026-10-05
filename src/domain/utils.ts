@@ -12,11 +12,17 @@
 const CJK = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\u{20000}-\u{2fa1f}]/gu;
 const PUNCTUATION =
   /[\p{P}\p{S}]/gu;
+/**
+ * 零宽连接符（U+200D，`\p{Cf}`）与变体选择符（U+FE0F，`\p{Mn}`）既不是标点也不是符号，
+ * 剥不掉就会被当成"西文词"：`👨‍👩‍👧`（一个人）报 2 个词、`❤️` 报 1 个，而单个 `😀` 报 0 个
+ * ——同一个 emoji 体系里自相矛盾，字数随 emoji 虚高。组合记号（`\p{Me}`）同理。
+ */
+const JOINERS = /[\p{Cf}\p{Mn}\p{Me}]/gu;
 
 export function countWords(text: string): number {
   if (!text.trim()) return 0;
-  // 标点与符号先去掉：它们不构成「字」，也不该把西文词切开成两个
-  const stripped = text.replace(PUNCTUATION, " ");
+  // 标点与符号先去掉：它们不构成「字」，也不该把西文词切开成两个；连接符与变体选择符一并剥掉
+  const stripped = text.replace(PUNCTUATION, " ").replace(JOINERS, "");
   const cjk = (stripped.match(CJK) ?? []).length;
   const rest = stripped.replace(CJK, " ").trim();
   const words = rest ? rest.split(/\s+/).filter(Boolean).length : 0;

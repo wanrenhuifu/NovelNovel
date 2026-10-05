@@ -212,5 +212,68 @@ const urlAvatar = await parseCharacterBytes(
 check("外链头像没有字节", urlAvatar.character.avatarBytes, null);
 checkTrue("外链头像有说明", Boolean(urlAvatar.character.avatarNote));
 
+// ── 畸形 PNG 头像：导出不能整体失败，要退回占位图 ──────────────────
+// 有 PNG 魔数不等于 chunk 结构完好。导入端（第三方库）遇到越界 chunk 只是停止读，
+// 导出端 `readPngChunks` 会抛错——同一份字节"能进不能出"。这里钉住"退回占位图"。
+console.log("--- 畸形 PNG 头像 ---");
+const goodPng = new Uint8Array(await buildCharacterPng(imported.character, null));
+const malformed = [
+  ["截断（砍掉尾部 12 字节）", goodPng.slice(0, goodPng.length - 12)],
+  ["只有 8 字节签名", goodPng.slice(0, 8)],
+  ["chunk 长度越界", (() => {
+    const copy = Uint8Array.from(goodPng);
+    // 第 2 个 chunk 的 length 字段（紧跟 8 字节签名之后）写成荒谬的大值
+    copy[8] = 0xff;
+    copy[9] = 0xff;
+    copy[10] = 0xff;
+    copy[11] = 0x00;
+    return copy;
+  })()],
+];
+for (const [label, bytes] of malformed) {
+  let outcome;
+  try {
+    const png = new Uint8Array(await buildCharacterPng(imported.character, bytes));
+    outcome = png.length > 100 ? "ok" : `太小(${String(png.length)})`;
+  } catch (error) {
+    outcome = `抛错: ${String(error.message).slice(0, 60)}`;
+  }
+  check(`畸形头像可导出（${label}）`, outcome, "ok");
+}
+
+// ── V3 卡：编辑后再导出，ccv3 必须跟着变（读取端 ccv3 优先）──────────
+// 曾经的 bug：ccv3 由 rawData 重建、存储字段不参与，于是同一个 PNG 里 chara=新名、ccv3=旧名，
+// 再导入拿到的是**旧值**——用本插件改过的卡导回 SillyTavern 等于白改。
+console.log("--- V3 卡往返 ---");
+const v3Imported = await parseCharacterBytes(
+  new TextEncoder().encode(
+    JSON.stringify({
+      spec: "chara_card_v3",
+      spec_version: "3.0",
+      data: {
+        name: "旧名",
+        description: "旧描述",
+        personality: "p",
+        scenario: "s",
+        first_mes: "f",
+        mes_example: "m",
+      },
+    }),
+  ),
+  "v3.json",
+  "application/json",
+);
+check("V3 卡被识别为 v3", v3Imported.character.specVersion, "v3");
+
+const v3Back = await parseCharacterBytes(
+  new Uint8Array(
+    await buildCharacterPng({ ...v3Imported.character, name: "新名", description: "新描述" }, null),
+  ),
+  "v3-back.png",
+  "image/png",
+);
+check("V3 往返后 name 是编辑后的值（ccv3 不能还是旧值）", v3Back.character.name, "新名");
+check("V3 往返后 description 是编辑后的值", v3Back.character.description, "新描述");
+
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

@@ -25,6 +25,10 @@ export const DEFAULT_USER_NAME = "主角";
 /**
  * 替换 SillyTavern 常用宏。
  * {{char}} → 角色名；{{user}} → 主角名（小说场景下默认为"主角"）。
+ *
+ * 替换值一律用**函数形式**（`() => name`）：字符串形式的替换串里 `$&`、`$'`、`` $` ``、`$$`
+ * 是特殊模式，而角色名是用户数据——名字里带 `$` 会把结果改写成乱码（实测 `A$'B` 会让
+ * `{{char}}` 留在原地并把后半段复制一遍）。
  */
 export function replaceMacros(
   text: string,
@@ -32,10 +36,10 @@ export function replaceMacros(
   userName = DEFAULT_USER_NAME,
 ): string {
   return text
-    .replace(/\{\{char\}\}/gi, charName)
-    .replace(/<BOT>/gi, charName)
-    .replace(/\{\{user\}\}/gi, userName)
-    .replace(/<USER>/gi, userName);
+    .replace(/\{\{char\}\}/gi, () => charName)
+    .replace(/<BOT>/gi, () => charName)
+    .replace(/\{\{user\}\}/gi, () => userName)
+    .replace(/<USER>/gi, () => userName);
 }
 
 /** 标题/名字进 `### ` 行时必须单行，否则会被当成新的提示词结构 */

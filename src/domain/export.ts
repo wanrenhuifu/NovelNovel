@@ -69,12 +69,26 @@ export interface ExportableCharacter {
 function toV2Spec(character: ExportableCharacter): Record<string, unknown> {
   const raw = JSON.parse(character.rawData) as Record<string, unknown>;
   const spec = raw.spec;
-  const isV2 = spec === "chara_card_v2" || spec === "chara_card_v3";
-  const rawData = ((raw.data ?? raw) as Record<string, unknown>) ?? {};
+  // 按**形状**判断 V2/V3（`data` 是对象），不看 `spec` 字面量：只写 `spec_version`、
+  // 大小写不同或缺 `spec` 的卡会被误判成 V1，于是 `raw` 被整个摊进 `data`
+  // （导出成 `data.data.…`）而真正的字段被埋掉。
+  const v2Data =
+    typeof raw.data === "object" && raw.data !== null ? (raw.data as Record<string, unknown>) : undefined;
+  const isV2 = v2Data !== undefined;
+  /**
+   * `data` 的合并底本：V2/V3 用原 `data`，V1 用扁平的 `raw`。
+   * 与 `source` 的区别很重要——底本决定"哪些未知键要保留"，而下面的字段**回退来源**必须
+   * 两者都能落到（V1 的 `character_version` / `system_prompt` 就在扁平层，只看 V2 的 data
+   * 会让 V1 卡往返时丢掉这两个字段）。
+   */
+  const base = isV2 ? (v2Data as Record<string, unknown>) : raw;
   const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
-  const data: Record<string, unknown> = isV2 ? { ...rawData } : { ...raw };
-  data.name = character.name.trim() || str(rawData.name);
+  const pick = (key: string): unknown => base[key];
+  const arr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+  const data: Record<string, unknown> = { ...base };
+  data.name = character.name.trim() || str(pick("name"));
   data.description = character.description;
   data.personality = character.personality;
   data.scenario = character.scenario;
@@ -82,14 +96,12 @@ function toV2Spec(character: ExportableCharacter): Record<string, unknown> {
   data.mes_example = character.mesExample;
   data.creator_notes = character.creatorNotes;
   data.creator = character.creator;
-  data.character_version = str(rawData.character_version);
-  data.system_prompt = str(rawData.system_prompt);
-  data.post_history_instructions = str(rawData.post_history_instructions);
-  data.alternate_greetings = Array.isArray(rawData.alternate_greetings)
-    ? rawData.alternate_greetings
-    : [];
-  data.tags = Array.isArray(rawData.tags) ? rawData.tags : [];
-  data.extensions = (rawData.extensions as Record<string, unknown> | undefined) ?? {};
+  data.character_version = str(pick("character_version"));
+  data.system_prompt = str(pick("system_prompt"));
+  data.post_history_instructions = str(pick("post_history_instructions"));
+  data.alternate_greetings = arr(pick("alternate_greetings"));
+  data.tags = arr(pick("tags"));
+  data.extensions = (pick("extensions") as Record<string, unknown> | undefined) ?? {};
 
   if (isV2) {
     return { ...raw, spec, data };
@@ -114,10 +126,19 @@ export async function buildCharacterPng(
   character: ExportableCharacter,
   avatarBytes: Uint8Array | null,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const v2 = JSON.stringify(toV2Spec(character));
+  const v2Spec = toV2Spec(character);
+  const v2 = JSON.stringify(v2Spec);
   const isV3 = character.specVersion === "v3";
+  // ccv3 的 data **复用合并后的那一份**（存储字段权威）。从 rawData 重建的话，
+  // 同一个 PNG 里会出现 chara=新名、ccv3=旧名，而读取端 ccv3 优先 →
+  // 用户用 novel_character 改过的字段在再导入时被悄悄换回旧值。
   const v3 = isV3
-    ? JSON.stringify({ ...JSON.parse(character.rawData), spec: "chara_card_v3", spec_version: "3.0" })
+    ? JSON.stringify({
+        ...(JSON.parse(character.rawData) as Record<string, unknown>),
+        spec: "chara_card_v3",
+        spec_version: "3.0",
+        data: v2Spec.data,
+      })
     : null;
 
   const cardChunks = [
@@ -125,12 +146,20 @@ export async function buildCharacterPng(
     ...(v3 ? [makeTextChunk("ccv3", toBase64(v3))] : []),
   ];
 
+  /**
+   * 所有「卡片关键字」的 tEXt 都要剔除，不只是我们自己写的那两个。
+   * 读取端认的 v1/v2 关键字里有老式的 `character_card`（还有 `ccv2`）：
+   * 它们原封不动留在原位，而新写的 `chara` 插在 IEND 之前 → 读取端 `.find()` 命中靠前的旧 chunk，
+   * 于是"导入 → 改名 → 导出 → 再导入"拿到的是旧卡，编辑全部丢失。
+   */
+  const CARD_KEYWORDS = new Set(["chara", "ccv3", "ccv2", "character_card"]);
+
   const withCard = (base: Uint8Array): Uint8Array<ArrayBuffer> => {
     const chunks = readPngChunks(base).filter((chunk) => {
       if (chunk.type !== "tEXt") return true;
       const parsed = parseTextChunk(chunk);
       const kw = parsed?.keyword.toLowerCase() ?? "";
-      return kw !== "chara" && kw !== "ccv3";
+      return !CARD_KEYWORDS.has(kw);
     });
     const iendIndex = chunks.findIndex((c) => c.type === "IEND");
     return writePng([
@@ -140,6 +169,19 @@ export async function buildCharacterPng(
     ]);
   };
 
-  if (avatarBytes && isPng(avatarBytes)) return withCard(avatarBytes);
-  return withCard(await makeSolidPng(512, 512, [38, 33, 29, 255]));
+  const placeholder = async (): Promise<Uint8Array<ArrayBuffer>> =>
+    withCard(await makeSolidPng(512, 512, [38, 33, 29, 255]));
+
+  if (avatarBytes && isPng(avatarBytes)) {
+    // 头像"看着像 PNG"（有魔数）不代表 chunk 结构完好。`readPngChunks` 对截断/长度越界的文件
+    // 会抛错，而导入端（第三方库）遇到同样的问题只是停止读 chunk——
+    // 于是同一份字节"能进不能出"，用户拿到一个没有头像的卡却不知道为什么。
+    // 导出不该因为头像坏掉而整体失败：退回占位图，卡片数据仍然完整。
+    try {
+      return withCard(avatarBytes);
+    } catch {
+      return await placeholder();
+    }
+  }
+  return await placeholder();
 }

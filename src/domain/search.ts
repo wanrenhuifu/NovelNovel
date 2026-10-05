@@ -58,7 +58,7 @@ export function searchChapters<
     // 这样 maxTotal=1 时正文还能拿到一条命中，而不是被标题全吃掉。
     const titleHit = foldForSearch(ch.title).includes(q);
     if (titleHit && results.length < maxTotal) {
-      const bodyStart = ch.content.slice(0, 40).replace(/\s+/g, " ").trim();
+      const bodyStart = sliceByCodePoint(ch.content, 0, 40).replace(/\s+/g, " ").trim();
       results.push({
         chapterId: ch.id as NonNullable<C["id"]>,
         chapterTitle: ch.title,
@@ -89,6 +89,31 @@ export function searchChapters<
   return results;
 }
 
+/**
+ * 按**码点**边界对齐的切片。
+ *
+ * `String.prototype.slice` 按 UTF-16 码元切，emoji/增补平面字符占两个码元，
+ * 切在中间会产出孤立代理（渲染成 U+FFFD）。摘要与预览都是"取前后 N 个字符"，
+ * 边界由长度算出来而不是由内容决定，所以必须对齐。
+ */
+function sliceByCodePoint(text: string, from: number, to: number): string {
+  let start = Math.max(0, Math.min(from, text.length));
+  let end = Math.max(start, Math.min(to, text.length));
+  // 起点落在低位代理上 → 退一格（不把上一对拆开）
+  const lowFrom = (i: number): boolean => {
+    const code = text.charCodeAt(i);
+    return code >= 0xdc00 && code <= 0xdfff;
+  };
+  const highAt = (i: number): boolean => {
+    const code = text.charCodeAt(i - 1);
+    return code >= 0xd800 && code <= 0xdbff;
+  };
+  if (start > 0 && start < text.length && lowFrom(start) && highAt(start)) start -= 1;
+  // 终点把一对拆开 → 退一格
+  if (end > 0 && end < text.length && lowFrom(end) && highAt(end)) end -= 1;
+  return text.slice(start, end);
+}
+
 /** 命中处前后各取约 radius 字符作为摘要，换行折叠为空格 */
 function buildSegments(
   text: string,
@@ -100,10 +125,10 @@ function buildSegments(
   const end = Math.min(text.length, idx + len + radius);
   const clean = (s: string) => s.replace(/\s+/g, " ");
   const segments: SearchSegment[] = [];
-  if (start > 0) segments.push({ text: "…" + clean(text.slice(start, idx)), hit: false });
-  else if (idx > 0) segments.push({ text: clean(text.slice(0, idx)), hit: false });
-  segments.push({ text: clean(text.slice(idx, idx + len)), hit: true });
-  const tail = text.slice(idx + len, end);
+  if (start > 0) segments.push({ text: "…" + clean(sliceByCodePoint(text, start, idx)), hit: false });
+  else if (idx > 0) segments.push({ text: clean(sliceByCodePoint(text, 0, idx)), hit: false });
+  segments.push({ text: clean(sliceByCodePoint(text, idx, idx + len)), hit: true });
+  const tail = sliceByCodePoint(text, idx + len, end);
   if (tail) {
     segments.push({
       text: clean(tail) + (end < text.length ? "…" : ""),

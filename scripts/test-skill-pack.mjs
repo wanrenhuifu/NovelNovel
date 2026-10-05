@@ -216,5 +216,20 @@ check("single relative segment terminates", eq(ancestorDirs("proj"), ["proj"]));
 // 走到根就要停：早年这里漏了终止条件，单段路径会死循环
 check("posix root terminates", eq(ancestorDirs("/"), ["/"]));
 
+// BOM 下切正文：match 是在剥掉 BOM 的 body 上求出来的，若拿原文 text 去 slice 会整体偏移
+// 一个字符。平时被 trim 吃掉，只有 frontmatter 之后没有换行时才暴露（正文变成 "-"）。
+// 用 fromCharCode 构造 BOM：直接写转义在打包后可能被再次处理，容易把测试本身搞错。
+const bom = String.fromCharCode(0xfeff);
+const bomNoTrailingNewline = `${bom}---\nname: bom-skill\ndescription: d\n---`;
+const bomParsed = parseSkillFile(bomNoTrailingNewline, "bom/SKILL.md");
+check(
+  "BOM 且无尾换行时正文为空（而不是残留一个 '-'）",
+  JSON.stringify(bomParsed.content),
+  '""',
+);
+
+const bomWithBody = `${bom}---\nname: bom-skill\ndescription: d\n---\n真正的正文`;
+check("BOM 下正文不偏移", parseSkillFile(bomWithBody, "bom/SKILL.md").content, "真正的正文");
+
 console.log(failed === 0 ? "\nall passed" : `\n${failed} failed`);
 process.exit(failed ? 1 : 0);
