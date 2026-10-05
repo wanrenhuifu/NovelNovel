@@ -31,6 +31,7 @@ node scripts/test-domain-utils.mjs  # 字数统计（标点与扩展 B 汉字）
 node scripts/test-client-manifest.mjs # 客户端半边清单：dsh.client 形态 + exports["./client"] + **产物必须存在**
 node scripts/test-client-bundle.mjs   # 客户端产物：包装格式、external 无漏项、slot 注册冒烟
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
+npm run test:hygiene                # 测试不许污染用户 profile（启动器 cwd + 跑完后的残留检查）
 npm run test:dsh                    # 54 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
@@ -53,7 +54,11 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 
 端到端与性能探针统一走 `npm run test:*` 的启动器（`scripts/dsh-node-launcher.mjs`）：它们用
 **DSH 自带的 Electron Node** 跑 `tests/verify.mjs` / `tests/perf-probe.mjs`（harness 包在 `app.asar`
-里，普通 node 读不到），cwd 切到 profile 目录并注入 `DSH_ENTRY`/`DSH_INSTALL`。安装目录自动探测，
+里，普通 node 读不到），cwd 是一个**一次性临时目录**并注入 `DSH_ENTRY`/`DSH_INSTALL`/`NN_TEST_CWD`。
+**cwd 绝不能是 profile 目录**：曾经是，于是走 `process.cwd()` 的探针把三本空作品写进了用户的
+`~/.dsh/profiles/<name>/`；插件与 harness 的解析靠 profile 锚点与安装路径、**不依赖 cwd**，
+所以换成临时目录不影响任何解析（`npm run test:hygiene` 守着这条，静态+动态两道）。
+安装目录自动探测，
 可用 `DSH_INSTALL` 指定；**测试用哪个 profile 只认 `DSH_TEST_PROFILE`（默认 novelnovel）**——
 不读会话里的 `DSH_PROFILE`（桌面端会话里它是 `desktop`，插件不一定装在那儿）。
 无 lint 配置。仓库是 git 仓库（origin = `wanrenhuifu/NovelNovel`），提交信息沿用

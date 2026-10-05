@@ -7,8 +7,8 @@
  *   2. 顺手保证测试进程与运行中的 DSH 用同一套模块解析语义。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** 找 DSH 安装目录：$DSH_INSTALL → 从 $DSH_ENTRY 反推 → 常见位置 */
@@ -25,7 +25,14 @@ export function findInstall() {
 }
 
 /**
- * 在 profile 目录里用 DSH 的 Electron Node 跑一个脚本。
+ * 在**一次性临时目录**里用 DSH 的 Electron Node 跑一个脚本。
+ *
+ * 为什么 cwd 不是 profile 目录：曾经是，于是任何走 `process.cwd()` 的代码都会写进用户的
+ * DSH profile——一个缺会话的探针真的在 `~/.dsh/profiles/novelnovel/.novelnovel/` 里造出了
+ * 三本空作品，最后要人工确认再删。改成临时目录后这类污染从根上不可能发生。
+ * 插件与 harness 的解析靠 `$DSH_HOME/profiles/<name>` 与安装路径（见 `tests/harness-loader.mjs`），
+ * **不依赖 cwd**，所以换目录不影响解析。
+ *
  * @param script 要运行的脚本绝对路径
  * @param profileName 测试用的 profile 名（插件装在那里）
  * @returns 退出码
@@ -61,17 +68,27 @@ export function runInDshNode(script, profileName) {
   }
 
   console.log(`harness: ${install}`);
-  const result = spawnSync(join(install, "DeepSeek Harness.exe"), [script], {
-    cwd: profileDir,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-      DSH_INSTALL: install,
-      // 只影响测试进程的 cwd/插件解析；会话里常带的 DSH_PROFILE 不能决定测试用哪个 profile
-      DSH_PROFILE: profileName,
-      DSH_ENTRY: join(install, "resources", "app.asar", "dsh", "node_modules", "anchor.mjs"),
-    },
-  });
-  return result.status ?? 1;
+  // 每次运行一个干净目录：测试要落盘就在里面落，退出即销毁
+  const scratch = mkdtempSync(join(tmpdir(), "nn-test-cwd-"));
+  let status = 1;
+  try {
+    const result = spawnSync(join(install, "DeepSeek Harness.exe"), [script], {
+      cwd: scratch,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        DSH_INSTALL: install,
+        // 只影响测试进程的 cwd/插件解析；会话里常带的 DSH_PROFILE 不能决定测试用哪个 profile
+        DSH_PROFILE: profileName,
+        DSH_ENTRY: join(install, "resources", "app.asar", "dsh", "node_modules", "anchor.mjs"),
+        // 给测试一个已知的"可写临时位置"，别让它们去猜 cwd
+        NN_TEST_CWD: scratch,
+      },
+    });
+    status = result.status ?? 1;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  return status;
 }

@@ -47,6 +47,7 @@
     "typecheck": "tsc -p .",
     "test": "node scripts/test-card-import.mjs && node scripts/test-card-export.mjs && node scripts/test-preset-import.mjs && node scripts/test-search.mjs && node scripts/test-reorder.mjs && node scripts/test-skill-pack.mjs && node scripts/test-domain-utils.mjs && node scripts/test-client-normalize.mjs && node scripts/test-client-logic.mjs && node scripts/test-panel-render.mjs && node scripts/test-panel-interaction.mjs && node scripts/test-client-manifest.mjs && node scripts/test-client-bundle.mjs",
     "test:guard": "node scripts/test-harness-guard.mjs",
+    "test:hygiene": "node scripts/test-profile-hygiene.mjs",
     "test:dsh": "node scripts/verify-dsh.mjs",
     "test:compose": "node scripts/verify-client-compose.mjs",
     "test:primitives": "node scripts/verify-client-primitives.mjs",
