@@ -10,7 +10,7 @@
  */
 import * as React from "react";
 import { ApiFailure, api, type ChapterDetail, type ProjectDetail, type ProjectSummary } from "./api";
-import { normalizeDetail } from "./normalize";
+import { normalizeChapter, normalizeDetail } from "./normalize";
 
 export interface PanelState {
   loading: boolean;
@@ -31,7 +31,11 @@ export interface PanelActions {
   selectChapter(id: string): void;
 }
 
-const INITIAL: PanelState = {
+/**
+ * 初始状态：**状态的单一真相**。
+ * 导出它是为了让渲染测试能用同一份形状构造夹具——手抄一份字段列表迟早会与这里漂移。
+ */
+export const INITIAL: PanelState = {
   loading: true,
   chapterLoading: false,
   error: null,
@@ -117,7 +121,13 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
           if (stale()) return;
           // 身份校验：期间若换了作品，这份结果属于上一本，丢掉
           if (result.projectId !== activeIdRef.current) return;
-          patch({ chapter: result.chapter, chapterId: result.chapter.id, chapterLoading: false });
+          // 正文也要归一化：类型只是对未校验 JSON 的断言，`content` 是数字时面板会整块崩掉
+          const safeChapter = normalizeChapter(result.chapter);
+          if (safeChapter === null) {
+            patch({ chapterLoading: false, error: "这一章的正文数据读不出来（缺字段），面板无法显示" });
+            return;
+          }
+          patch({ chapter: safeChapter, chapterId: safeChapter.id, chapterLoading: false });
         } catch (error) {
           if (stale()) return;
           patch({ loading: false, chapterLoading: false, error: describe(error) });

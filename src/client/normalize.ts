@@ -9,7 +9,7 @@
  *
  * 纯函数、不碰 DOM，所以能直接用 node 测。
  */
-import type { ChapterSummary, LoreEntrySummary, ProjectDetail } from "./api";
+import type { ChapterDetail, ChapterSummary, LoreEntrySummary, ProjectDetail } from "./api";
 
 /** 落盘 JSON 里实际可能是任何东西 */
 type Loose = Record<string, unknown>;
@@ -42,6 +42,23 @@ export function normalizeChapters(value: unknown): ChapterSummary[] {
     words: asNumber(raw.words),
     updatedAt: asNumber(raw.updatedAt),
   }));
+}
+
+/**
+ * 章节正文也归一化。
+ *
+ * 这条是**渲染测试逼出来的**：`api.ts` 的类型只是对未校验 JSON 的断言，而 `state.ts` 里
+ * `detail` 走了归一化、`chapter` 却是原样 `patch` 进去的——于是 `content` 是数字时面板会在
+ * `content.toLowerCase()` 上整块崩掉（首方错误边界接住 = 一片空白）。类型说它一定是字符串，
+ * 但"类型说"正是这次教训本身。
+ */
+export function normalizeChapter(value: unknown): ChapterDetail["chapter"] | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Loose;
+  return {
+    ...normalizeChapters([raw])[0]!,
+    content: asString(raw.content),
+  };
 }
 
 export function normalizeLorebook(value: unknown): LoreEntrySummary[] {
