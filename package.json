@@ -54,6 +54,7 @@
     "test:sandbox": "node scripts/verify-sandbox-session.mjs",
     "test:chapter-guard": "node scripts/verify-chapter-id-guard.mjs",
     "test:race": "node scripts/verify-concurrency.mjs",
+    "test:edge": "node scripts/verify-edge-cases.mjs",
     "test:perf": "node scripts/probe-dsh-perf.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm test && npm run typecheck"
