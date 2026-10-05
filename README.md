@@ -319,6 +319,7 @@ npm run test:compose    # 用宿主真实注册表验证客户端半边能组合
 npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
 npm run test:chapter-guard  # 章节 id 不能当路径段（越界 id 读不到别的作品）
 npm run test:contract   # 文档契约：README 工具表承诺的 action 必须真实存在
+npm run test:package    # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
 
