@@ -1,6 +1,6 @@
 ---
 name: novel-writing
-description: Write, continue, revise, outline or export a novel that lives in a NovelNovel project (the novel_* tools). Use when the user asks for prose, a new chapter, a continuation of the story, a rewrite or polish of existing text, a chapter/whole-book summary or outline, or asks what the story's settings, characters, world book and writing style currently are.
+description: Write, continue, revise, outline or export a novel that lives in a NovelNovel project (the novel_* tools). Use when the user asks for prose, a new chapter, a continuation of the story, a rewrite or polish of existing text, a chapter/whole-book summary or outline, or asks what the story's settings, characters, world book and writing style currently are. 中文触发：写小说、接着写、续写、写下一章、改稿、润色、大纲、导出、这本书的设定与文风。
 whenToUse: Any fiction-writing request in a workspace that has a .novelnovel data directory, or when the user mentions NovelNovel, 作品/章节/角色卡/世界观词条/写作预设.
 ---
 

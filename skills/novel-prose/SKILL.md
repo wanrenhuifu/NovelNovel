@@ -1,6 +1,6 @@
 ---
 name: novel-prose
-description: Diagnose or revise the prose of a NovelNovel chapter — sentence rhythm, narrative distance, point-of-view consistency, showing versus telling, and removing AI tells (stacked similes, filler intensifiers, parallel triads, labelled emotions). Use for a polish request, for "this reads like AI", or for text that feels flat, overwrought or generic.
+description: Diagnose or revise the prose of a NovelNovel chapter — sentence rhythm, narrative distance, point-of-view consistency, showing versus telling, and removing AI tells (stacked similes, filler intensifiers, parallel triads, labelled emotions). Use for a polish request, for "this reads like AI", or for text that feels flat, overwrought or generic. 中文触发：润色、改写、文风、去 AI 味、行文、句子节奏、读起来像 AI、太平、太满、辞藻。
 whenToUse: Polishing, rewriting, de-AI-ing or voice-matching existing prose in a NovelNovel project — 润色 / 改写 / 去 AI 味 / 文风不一致 / 「读起来像 AI」/「太平」/「太满」.
 ---
 

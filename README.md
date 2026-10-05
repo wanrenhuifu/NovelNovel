@@ -329,6 +329,7 @@ npm run test:paging     # 章节列表分页：数 ctx.fs 调用与 summary 长�
 npm run test:words      # 字数缓存：直接改文件后字数仍会重算 + 缓存真的省调用
 npm run test:lifecycle  # 生命周期：重复挂载会抛错、卸载后干净、能重新挂载（HMR 路径）
 npm run test:prompt     # 系统提示词段：文本内容 + 组装位置 + 卸载后不留残留
+npm run test:skills     # 自带技能：中文触发词必须在 description 里（whenToUse 不进提示词）
 npm run test:hygiene    # 测试不许污染用户 profile（启动器 cwd + 跑完后的残留检查）
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```

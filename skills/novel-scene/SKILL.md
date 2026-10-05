@@ -1,6 +1,6 @@
 ---
 name: novel-scene
-description: Build or repair a scene in a NovelNovel chapter — scene versus summary, goal/obstacle/turn, entering late and leaving early, stakes, chapter-end hooks, and diagnosing a passage that drags. Use when pacing feels wrong, when a scene may not be needed, or when a chapter needs a better ending.
+description: Build or repair a scene in a NovelNovel chapter — scene versus summary, goal/obstacle/turn, entering late and leaving early, stakes, chapter-end hooks, and diagnosing a passage that drags. Use when pacing feels wrong, when a scene may not be needed, or when a chapter needs a better ending. 中文触发：场景、节奏、这段拖沓、没有冲突、章末勾子、收尾、进得太早、出得太晚。
 whenToUse: Pacing and scene construction in a NovelNovel project — 节奏 / 拖沓 / 「这段有点无聊」/ 「不知道该不该留这一幕」/ chapter endings and 章末钩子.
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: novel-dialogue
-description: Write or repair dialogue in a NovelNovel chapter — subtext, giving each speaker a distinct voice, tag discipline, action beats instead of tags, and avoiding talking-heads scenes or exposition delivered as conversation. Use for a dialogue-heavy scene, a conversation to rewrite, or characters who all sound alike.
+description: Write or repair dialogue in a NovelNovel chapter — subtext, giving each speaker a distinct voice, tag discipline, action beats instead of tags, and avoiding talking-heads scenes or exposition delivered as conversation. Use for a dialogue-heavy scene, a conversation to rewrite, or characters who all sound alike. 中文触发：对白、台词、对话、人物说话分不清、对话太干、两个人站着聊天。
 whenToUse: Dialogue work in a NovelNovel project — 对话 / 台词 / 对白, 「他说」太多, characters sounding the same, a conversation that needs rewriting or punching up.
 ---
 

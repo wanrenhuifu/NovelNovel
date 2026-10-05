@@ -1,6 +1,6 @@
 ---
 name: novel-cards
-description: Import, inspect, adjust or re-export SillyTavern character cards and writing presets in a NovelNovel project (novel_character, novel_lorebook, novel_preset). Use when the user brings a .png/.json character card or preset file, asks how the card's world book or macros were handled, wants a card excluded from the writing brief, or wants a card handed back to SillyTavern.
+description: Import, inspect, adjust or re-export SillyTavern character cards and writing presets in a NovelNovel project (novel_character, novel_lorebook, novel_preset). Use when the user brings a .png/.json character card or preset file, asks how the card's world book or macros were handled, wants a card excluded from the writing brief, or wants a card handed back to SillyTavern. 中文触发：角色卡、世界书、预设、导入卡、换卡、这张卡不进简报、导回 SillyTavern。
 whenToUse: Character card files (PNG/JSON, V1/V2/V3), SillyTavern world books, story_string presets, {{char}}/{{user}} macros, or "把这张卡导出/导入".
 ---
 

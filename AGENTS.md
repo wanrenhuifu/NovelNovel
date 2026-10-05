@@ -47,6 +47,7 @@ npm run test:paging                 # 章节列表分页：数 ctx.fs 调用与 
 npm run test:words                  # 字数缓存：改文件后字数仍重算（README 的承诺）+ 缓存真的省调用
 npm run test:lifecycle              # 生命周期：重复挂载会抛错、卸载后干净、能重新挂载
 npm run test:prompt                 # 系统提示词段：文本内容 + 组装位置 + 卸载后不留残留
+npm run test:skills                 # 自带技能：中文触发词必须在 description 里（whenToUse 不进提示词）
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
@@ -104,8 +105,15 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 
 - 模型可见的字符串用**英文**：工具 `description`/参数说明/`summary`，以及 SKILL.md 的 frontmatter
   与正文（`description` 就是模型唯一能看到的路由判据，harness 对工具 schema 和技能都没有本地化
-  机制）。中文留给 README、AGENTS.md、代码注释；但 `whenToUse` 里要保留中文触发词（`润色`/`断章`
-  这类），否则用户用中文提问时技能匹配不上。只读类工具声明 `isConcurrencySafe`，会写文件的不要声明。
+  机制）。中文留给 README、AGENTS.md、代码注释。
+  **但技能的 `description` 必须带中文触发词**（`润色`/`断章` 这类）——这条被实测纠正过：
+  技能目录的模板（`@deepseek-ai/dsh-tool-skill` 的 catalog template）是
+  `` - `<name>`: <normalized-and-capped-description> ``，**只列 `description`，`whenToUse` 不进提示词**
+  （后者只出现在 API 控制器的技能列表里，是给面板/外部消费者用的元数据）。
+  所以"中文触发词写在 `whenToUse` 里"曾经等于白写：实测把提示词全组装出来后，
+  `润色`/`改写`/`去 AI 味`/`断章` **一个都没出现**。现在 6 个技能的 `description` 末尾都带
+  `中文触发：…`，由 `npm run test:skills` 守着。
+  只读类工具声明 `isConcurrencySafe`，会写文件的不要声明。
 - 危险操作（删作品/章节/角色卡/导入的技能）必须 `confirm=true` 才执行，错误信息提示先问用户；
   会覆盖别人文件的（技能包导入）用 `overwrite=true` 同理。
 - `update*` 的 patch 用 `store.ts` 导出的具名类型，不写 `Record<string, …>`。

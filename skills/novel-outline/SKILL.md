@@ -1,6 +1,6 @@
 ---
 name: novel-outline
-description: Plan or audit the structure of a NovelNovel project — book/volume/chapter outlines, throughlines and subplots, setup-and-payoff tracking, chapter beat sheets, and full-draft consistency checks. Also covers Chinese web-novel conventions (黄金三章, 爽点 density, escalation ladders, 断章). Use for outlining, plot-hole hunting, or cross-chapter pacing.
+description: Plan or audit the structure of a NovelNovel project — book/volume/chapter outlines, throughlines and subplots, setup-and-payoff tracking, chapter beat sheets, and full-draft consistency checks. Also covers Chinese web-novel conventions (黄金三章, 爽点 density, escalation ladders, 断章). Use for outlining, plot-hole hunting, or cross-chapter pacing. 中文触发：大纲、卷纲、章纲、伏笔、埋线、坑、剧情线、节奏崩、前后不一致。
 whenToUse: Outlining and structural review in a NovelNovel project — 大纲 / 卷纲 / 分幕 / 伏笔回收 / plot holes / 一致性检查 / 黄金三章 / 爽点 / 追读.
 ---
 
