@@ -35,6 +35,7 @@ npm run test:dsh                    # 52 项端到端检查：真实 harness 服
 npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
 npm run test:chapter-guard          # 真实 fs 语义：章节 id 不能当路径段（越界 id 读不到别的作品）
+npm run test:race                   # 并发交错：CAS 真的挡住了吗（用 fs 钩子构造交错，CAS 正确性只能这样证明）
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
@@ -273,6 +274,10 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   彻底解决要给词条记来源（哪个卡、第几条）并在重导入时更新，代价是 `lorebook.json` 加字段 + 迁移。
 - **没有 `restore`**：`novel_export action=backup` 能导出，但导回来只能手工铺文件。
 - **`action=write` 覆盖正文没有历史**：`append` 是常规路径，`write` 是整体替换，目前没有快照。
+  **修完 CAS 后行为变了**：`writeChapterBody` 会自己先读一次正文拿基准，所以"模型 read 之后、
+  write 之前有人改了文件"现在会**明确失败**（`cannot write … stale`）而不是静默覆盖——
+  模型必须重新 read 再 write。这是有意的取舍（宁可失败也不无声丢字），但意味着覆盖失败的
+  报错会变常见，别把它当异常。
 - **list/search 的最终上限**：`novel_chapter action=list` 逐章读全文并渲染预览，几千章时既慢又占上下文
   （`resolveProjectId` 那条路径已经只读元数据，但列表本身没有 `limit`）。
 - **面板只读**：`src/client/` 的写作面板不做写入——写要与模型抢同一份稿子，得先设计冲突 UX
