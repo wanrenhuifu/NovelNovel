@@ -40,6 +40,7 @@ npm run test:edge                   # 边界语义：章节引用优先级 / key
 npm run test:contract               # 文档契约：README 工具表承诺的 action 必须真实存在（双向）
 npm run test:package                # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册
 npm run test:render                 # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
+npm run test:interaction            # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
 npm run test:routes                 # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
