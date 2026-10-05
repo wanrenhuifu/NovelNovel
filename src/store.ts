@@ -13,7 +13,7 @@ import { computeReorder } from "./domain/reorder";
 import { searchChapters, type SearchMatch } from "./domain/search";
 import { countWords, uid } from "./domain/utils";
 import type { Context, ToolRunContext } from "./contract";
-import { FsOps, withStaleRetry, type FsSession, type VersionBasis } from "./fsx";
+import { FsOps, isStaleVersion, withStaleRetry, type FsSession, type VersionBasis } from "./fsx";
 import {
   WORKSPACE_VERSION,
   type Chapter,
@@ -1248,12 +1248,25 @@ export class NovelStore {
   ): Promise<Chapter> {
     const meta = await this.patchChapter(session, projectId, chapterId, () => {});
     const basis = expected ?? (await this.readChapterBodyVersioned(session, projectId, chapterId)).basis;
-    await this.ops.writeText(
-      this.chapterFile(projectId, chapterId),
-      content,
-      session,
-      basis,
-    );
+    try {
+      await this.ops.writeText(this.chapterFile(projectId, chapterId), content, session, basis);
+    } catch (error: unknown) {
+      // **刻意不在这里套 withStaleRetry**：那会把"模型 read 之后、write 之前有人改了文件"
+      // 这个**跨调用窗口**也一起重试掉，等于静默覆盖别人的编辑（实测过：套上重试后终态是
+      // 覆写内容，外部改动消失）。单次调用内的宇宙射线级冲突重试一下没问题，但跨调用窗口
+      // 必须让调用方知道。
+      // 这里只把 fs-local 的裸错（`cannot write "…" stale`）翻成模型可执行的文案。
+      if (isStaleVersion(error)) {
+        throw Object.assign(
+          new Error(
+            `chapter body changed on disk since it was read (${this.chapterFile(projectId, chapterId)}) — ` +
+              "read the chapter again, redo your edits on the latest text, then write.",
+          ),
+          { code: "NN_STALE_VERSION", cause: error },
+        );
+      }
+      throw error;
+    }
     return { ...meta, content, words: countWords(content) };
   }
 

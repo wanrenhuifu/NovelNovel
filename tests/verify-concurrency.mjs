@@ -204,8 +204,8 @@ check("准备：建好一个作品", typeof projectId === "string", String(proje
   );
   check(
     "拒绝时给出可执行的下一步（重读再写）",
-    /stale|re-read|cannot write/i.test(String(result.error?.message ?? "")),
-    String(result.error?.message ?? "").slice(0, 100),
+    /changed on disk|re-read|read the chapter again/i.test(String(result.error?.message ?? "")),
+    String(result.error?.message ?? "").slice(0, 110),
   );
 }
 
