@@ -108,7 +108,7 @@ export class FsOps {
     };
   }
 
-  /** 由工具执行上下文构造会话（缺 agent 时退化为进程工作目录） */
+  /** 由工具执行上下文构造会话 */
   sessionOf(exec: ToolRunContext): FsSession {
     return { ...this.sessionFor(exec.agent?.session, exec.signal), actor: exec };
   }

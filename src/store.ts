@@ -331,20 +331,23 @@ export class NovelStore {
   private async readWorkspace(
     session: FsSession,
   ): Promise<{ file: WorkspaceFile; basis: VersionBasis; error?: string }> {
+    const fallback: WorkspaceFile = { version: WORKSPACE_VERSION, activeProject: null };
+    // 先单独读一次文本：`readJsonVersioned` 在"文件在、但解析失败"时也返回 `existed: false`
+    // （它的契约是"有没有读出值"）。而基准的 `existed` 必须如实反映**文件在不在**——
+    // 否则写入会选 createIfAbsent，撞上那个坏文件报 "cannot overwrite … without reading it
+    // first"，于是 workspace.json 一旦写坏，所有「写指针」的入口（action=create / action=use）
+    // 全部失败，而错误文案还把用户指向"你没先读它"。
+    const raw = await this.ops.readTextVersioned(`${this.root()}/workspace.json`, session);
+    if (raw === null) return { file: fallback, basis: { existed: false } };
+    const basis: VersionBasis = { existed: true, version: raw.version };
     try {
-      const { value, basis } = await this.readJsonVersioned<WorkspaceFile>(
-        `${this.root()}/workspace.json`,
-        session,
-      );
-      return {
-        file: value ?? { version: WORKSPACE_VERSION, activeProject: null },
-        basis,
-      };
+      const parsed = JSON.parse(raw.text.replace(/^\uFEFF/, "")) as WorkspaceFile;
+      return { file: parsed ?? fallback, basis };
     } catch (error: unknown) {
       return {
-        file: { version: WORKSPACE_VERSION, activeProject: null },
-        basis: { existed: false },
-        error: (error as Error).message,
+        file: fallback,
+        basis,
+        error: `${(error as Error).message} (workspace.json is unreadable; the pointer will be rebuilt)`,
       };
     }
   }
@@ -403,7 +406,15 @@ export class NovelStore {
           this.projectFile(entry.name),
           session,
         );
-        if (!project) continue;
+        if (!project) {
+          // 目录在、project.json 不在：多半是「删作品」与并发写入撞在一起（写入会 mkdir -p
+          // 把刚删掉的目录重新建出来）。静默 continue 会让它变成**不可见的幽灵**——
+          // 列表既不显示也不报不可读，而正文确实躺在盘上。点名它。
+          throw new Error(
+            "this directory has no project.json (probably left over from a delete that raced " +
+              "with a write). Remove the directory, or recreate project.json to use it",
+          );
+        }
         if (typeof project.id === "string" && project.id !== entry.name) {
           throw new Error(
             `project.json id "${project.id}" does not match its directory name "${entry.name}". ` +

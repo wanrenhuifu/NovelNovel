@@ -875,8 +875,24 @@ assert.equal(emptyCreate.action, "create", "空目录里没有索引时应当允
 assert.ok(emptyProject.details.project_id);
 writeFileSync(orphanIndex, orphanIndexBackup, "utf8");
 ok("a missing chapter index with existing prose refuses to write");
-writeFileSync(orphanIndex, orphanIndexBackup, "utf8");
 ok("a corrupted-but-parsable chapter index also refuses to write");
+
+// ── workspace.json 写坏后仍能自愈 ─────────────────────────────────
+// 曾经的 bug：`readWorkspace` 把"坏了"当成"不存在"（返回 existed:false），于是写指针选
+// createIfAbsent、撞上那个坏文件报 "cannot overwrite … without reading it first" ——
+// 所有会写指针的入口（action=create / action=use）全失败，错误文案还把用户指向"你没先读它"。
+// 现在坏文件保留它的版本当基准，写入直接覆盖修复。
+step("corrupted workspace pointer self-heals");
+const workspaceFile = join(workspace, ".novelnovel", "workspace.json");
+const workspaceBackup = readFileSync(workspaceFile, "utf8");
+writeFileSync(workspaceFile, "{ 坏掉的 JSON", "utf8");
+const healed = await call("novel_project", { action: "use", project: orphanProject });
+assert.equal(healed.action, "use", "workspace.json 写坏后 action=use 应当能重建指针");
+const healedRaw = readFileSync(workspaceFile, "utf8");
+assert.doesNotThrow(() => JSON.parse(healedRaw), "自愈后 workspace.json 必须是合法 JSON");
+assert.equal(JSON.parse(healedRaw).activeProject, orphanProject, "自愈后指针指向被选中的作品");
+writeFileSync(workspaceFile, workspaceBackup, "utf8");
+ok("a corrupted workspace.json is rebuilt instead of blocking every pointer write");
 
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 
