@@ -31,7 +31,7 @@ node scripts/test-domain-utils.mjs  # 字数统计（标点与扩展 B 汉字）
 node scripts/test-client-manifest.mjs # 客户端半边清单：dsh.client 形态 + exports["./client"] + **产物必须存在**
 node scripts/test-client-bundle.mjs   # 客户端产物：包装格式、external 无漏项、slot 注册冒烟
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
-npm run test:hygiene                # 测试不许污染用户 profile（启动器 cwd + 跑完后的残留检查）
+npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**
 npm run test:dsh                    # 54 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
