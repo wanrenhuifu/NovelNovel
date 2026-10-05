@@ -131,7 +131,7 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 | 工具 | 作用 |
 |---|---|
 | `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求）/ 切换当前作品 / 删除 |
-| `novel_chapter` | 章节列表、读取、新建、**追加（写正文的入口）**、覆写、改名、打标签、排序、检索、删除 |
+| `novel_chapter` | 章节列表（`from`/`limit` 分页、`verbose=false` 精简）、读取、新建、**追加（写正文的入口）**、覆写、改名、打标签、排序、检索、删除 |
 | `novel_character` | SillyTavern 角色卡（PNG/JSON，V1/V2/V3）导入、查看、参与开关、再导出 PNG、移除 |
 | `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词=常驻注入） |
 | `novel_preset` | 写作预设导入（SillyTavern JSON）/ 手写 / 编辑 / 激活 / 停用 |
@@ -323,6 +323,7 @@ npm run test:package    # 分发冒烟：npm pack → 解包 → 加载 → 技�
 npm run test:render     # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
 npm run test:interaction # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
 npm run test:routes     # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
+npm run test:paging     # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
 

@@ -42,6 +42,7 @@ npm run test:package                # 分发冒烟：npm pack → 解包 → 加
 npm run test:render                 # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
 npm run test:interaction            # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
 npm run test:routes                 # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
+npm run test:paging                 # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
@@ -286,8 +287,10 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   write 之前有人改了文件"现在会**明确失败**（`cannot write … stale`）而不是静默覆盖——
   模型必须重新 read 再 write。这是有意的取舍（宁可失败也不无声丢字），但意味着覆盖失败的
   报错会变常见，别把它当异常。
-- **list/search 的最终上限**：`novel_chapter action=list` 逐章读全文并渲染预览，几千章时既慢又占上下文
-  （`resolveProjectId` 那条路径已经只读元数据，但列表本身没有 `limit`）。
+- **list/search 的最终上限**：`novel_chapter action=list` 支持 `from`/`limit`/`verbose=false`
+  分页与精简（见下方实测数字），但**默认仍是全量且带预览**——模型不主动分页时照样会吃掉一大段上下文。
+  `action=search` 有 `limit`（默认 50），命中的摘要长度固定，不需要分页。
+  `novel_project action=list` 会读遍全书算字数，几千章时也慢（`listChapterMetas` 那条路径已经只读元数据）。
 - **面板只读**：`src/client/` 的写作面板不做写入——写要与模型抢同一份稿子，得先设计冲突 UX
   并复用 CAS 语义，留到第二期。
 - **面板还不知道「当前工作区」**：HTTP 路由没有会话上下文，所以工作目录靠 `NovelStore` 记录的

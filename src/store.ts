@@ -1098,6 +1098,26 @@ export class NovelStore {
   }
 
   /**
+   * 读**给定窗口**的章节正文。
+   *
+   * 与 `listChapters` 的区别：那个读全书，这个只读传进来的那几章。
+   * `novel_chapter action=list` 分页时用它——几千章的书只翻一页不该把整本读一遍
+   * （实测 60 章就 201 次 ctx.fs 调用，且每一章都进模型上下文）。
+   */
+  async readChaptersIn(
+    session: FsSession,
+    projectId: string,
+    metas: readonly ChapterMeta[],
+  ): Promise<Chapter[]> {
+    const chapters: Chapter[] = [];
+    for (const meta of metas) {
+      const content = (await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session)) ?? "";
+      chapters.push({ ...meta, content, words: countWords(content) });
+    }
+    return chapters;
+  }
+
+  /**
    * 解析章节引用：id / 标题（精确或唯一部分匹配）/ 第N章。
    *
    * **顺序很关键**：先 id、再**标题**、最后才按序号。反过来的话，一个形如 `3` 的引用

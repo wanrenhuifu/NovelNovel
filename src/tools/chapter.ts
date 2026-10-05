@@ -66,7 +66,21 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
           description: "Place the moved chapter before or after `target` (action=move). Defaults to before.",
         },
         query: { type: "string", description: "Phrase to search for, case-insensitive (action=search)." },
-        limit: { type: "number", description: "Maximum search hits to return. Defaults to 50." },
+        limit: {
+          type: "number",
+          description:
+            "action=search: maximum hits (defaults to 50). action=list: how many chapters to list from `from` (defaults to all).",
+        },
+        from: {
+          type: "number",
+          description:
+            "action=list: 1-based index of the first chapter to list. Defaults to 1. Use with limit to page through a long book.",
+        },
+        verbose: {
+          type: "boolean",
+          description:
+            "action=list: set false for a compact index (no prose preview). Defaults to true.",
+        },
         confirm: {
           type: "boolean",
           description: "Must be true to delete a chapter. Ask the user first.",
@@ -80,29 +94,51 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
         const projectId = await store.resolveProjectId(session, args.project);
 
         if (args.action === "list") {
-          const chapters = await store.listChapters(session, projectId);
+          // 分页与精简：这是唯一能按顺序看章节的入口，而长篇（几千章）下原来会
+          // **逐章读全文**并把每一章都塞进 summary——3000 章实测约 10 万字符进上下文。
+          // `from`/`limit` 只读窗口内的正文（窗口外的字数由列表自身给出），
+          // `verbose=false` 连预览也不要，只留一行一章的索引。
+          const metas = await store.listChapterMetas(session, projectId);
+          const total = metas.length;
+          const from = args.from === undefined || !Number.isFinite(args.from) ? 1 : Math.max(1, Math.trunc(args.from));
+          const limit =
+            args.limit === undefined || !Number.isFinite(args.limit)
+              ? total
+              : Math.max(0, Math.trunc(args.limit));
+          const window = metas.slice(from - 1, from - 1 + limit);
+          const chapters = await store.readChaptersIn(session, projectId, window);
           const words = chapters.reduce((sum, chapter) => sum + chapter.words, 0);
           // 索引里列着、正文文件却不在的章节（`deleteChapter` 在"删正文"与"改索引"之间被中断
           // 就会留下这种半步状态）。不点名的话列表会把它显示成 `(empty)`，而 `action=read`
           // 对同一章报 "body file is missing"——同一份数据两种说法。
           const missing = await store.chaptersWithMissingBody(session, projectId);
           const missingSet = new Set(missing);
+          const verbose = args.verbose !== false;
+          const rangeLabel =
+            window.length === total
+              ? `${String(total)}`
+              : `${String(from)}-${String(from + window.length - 1)} of ${String(total)}`;
           const summary = lines(
-            chapters.length === 0
+            total === 0
               ? `No chapter yet. Add one with novel_chapter action=create title="<chapter title>".`
-              : `Chapters (${chapters.length}, ${words} words total):`,
+              : `Chapters (${rangeLabel}${window.length === total ? `, ${String(words)} words total` : `, ${String(words)} words in this window`}):`,
             ...chapters.map((chapter, index) =>
               lines(
-                `${index + 1}. ${chapter.title} [${chapter.id}] — ${chapter.words} words` +
-                  (chapter.tags.length > 0 ? ` · tags: ${chapter.tags.join("/")}` : ""),
+                `${String(from + index)}. ${chapter.title} [${chapter.id}] — ${chapter.words} words` +
+                  (verbose && chapter.tags.length > 0 ? ` · tags: ${chapter.tags.join("/")}` : ""),
                 missingSet.has(chapter.id)
                   ? "   ⚠ body file is missing on disk — the index still lists this chapter. " +
                     "Restore the file, or delete the chapter and create it again."
-                  : chapter.content.trim()
-                    ? `   ${preview(chapter.content, 70)}`
-                    : "   (empty)",
+                  : !verbose
+                    ? null
+                    : chapter.content.trim()
+                      ? `   ${preview(chapter.content, 70)}`
+                      : "   (empty)",
               ),
             ),
+            window.length < total
+              ? `(showing ${String(window.length)} of ${String(total)} — page with from=<n> limit=<n>, or set verbose=false for a compact index)`
+              : null,
           );
           return {
             action: args.action,
@@ -110,13 +146,15 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
             details: {
               project_id: projectId,
               chapters: chapters.map((chapter, index) => ({
-                index: index + 1,
+                index: from + index,
                 id: chapter.id,
                 title: chapter.title,
                 tags: chapter.tags,
                 words: chapter.words,
               })),
               words,
+              total_chapters: total,
+              ...(window.length < total ? { from, shown: window.length } : {}),
               ...(missing.length > 0 ? { chapters_missing_body: missing } : {}),
             },
           };
