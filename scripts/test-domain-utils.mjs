@@ -11,7 +11,7 @@ await esbuild.build({
   stdin: {
     contents:
       'export { countWords } from "./src/domain/utils";\n' +
-      'export { selectLoreEntries } from "./src/domain/prompt";',
+      'export { selectLoreEntries, normalizeLoreKeys, splitLoreKeys } from "./src/domain/prompt";',
     resolveDir: process.cwd(),
     loader: "ts",
   },
@@ -20,7 +20,7 @@ await esbuild.build({
   platform: "node",
   outfile: outFile,
 });
-const { countWords, selectLoreEntries } = await import(pathToFileURL(outFile).href);
+const { countWords, selectLoreEntries, normalizeLoreKeys } = await import(pathToFileURL(outFile).href);
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -73,6 +73,30 @@ check("空内容条目被排除", selectLoreEntries([entry({ keys: "血月", con
 check("全角关键词命中半角上下文", selectLoreEntries([entry({ keys: "ＡＢＣ" })], "abc 出现").length, 1);
 check("半角关键词命中全角上下文", selectLoreEntries([entry({ keys: "abc" })], "ＡＢＣ 出现").length, 1);
 check("全角空格归一化", selectLoreEntries([entry({ keys: "血 月" })], "血\u3000月").length, 1);
+
+// ── keys 只有分隔符时必须与「故意留空」收敛到同一个显式状态 ──────────
+// 注入侧按 [,，] 拆分、拆完为空即视为**常驻注入**。所以 `",,"` 这种输入原本会让条目
+// 每回合把整条内容注入提示词，而工具列表却显示"有关键词"——用户以为它有条目条件。
+// 写入侧现在做规范化，两者收敛到同一个空串。
+console.log("--- keys 规范化 ---");
+for (const [label, raw] of [
+  ["只有半角逗号", ",,"],
+  ["只有全角逗号", "，，"],
+  ["逗号加空格", " , "],
+  ["混合分隔符", "，,，"],
+  ["全空白", "   "],
+]) {
+  check(`${label} → 规范化为空串`, normalizeLoreKeys(raw), "");
+}
+check("多个关键词规范化为「逗号+空格」", normalizeLoreKeys("太阳，， 血月 ,,夜祷"), "太阳, 血月, 夜祷");
+check("单个关键词去掉首尾空白", normalizeLoreKeys("  血月  "), "血月");
+// 规范化成空串 = 显式的"常驻注入"：与上下文无关，任何上下文都注入（这正是收敛后的语义，
+// 而规范化之前它是**意外**变成常驻的——用户以为自己给了关键词）
+check(
+  "规范化成空串后语义是显式的常驻注入",
+  selectLoreEntries([entry({ keys: normalizeLoreKeys(",,") })], "完全无关的上下文").length,
+  1,
+);
 
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);

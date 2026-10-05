@@ -9,6 +9,7 @@ import type { LoreEntry, Preset } from "./domain/types";
 import { parseCharacterBytes } from "./domain/cardImport";
 import { buildCharacterPng, buildNovelDocument, safeName } from "./domain/export";
 import { parsePresetFile } from "./domain/presetImport";
+import { normalizeLoreKeys } from "./domain/prompt";
 import { computeReorder } from "./domain/reorder";
 import { searchChapters, type SearchMatch } from "./domain/search";
 import { countWords, uid } from "./domain/utils";
@@ -699,7 +700,9 @@ export class NovelStore {
           continue;
         }
         seen.add(key);
-        current.push({ ...entry, id: uid() });
+        // 关键词在写入时规范化：只有分隔符的输入（`,,` / `、` / ` , `）拆完是空数组，
+        // 注入侧会当成**常驻注入**（每回合全文进提示词），而列表却显示"有关键词"。
+        current.push({ ...entry, id: uid(), keys: normalizeLoreKeys(entry.keys) });
         added++;
       }
       if (added > 0) await this.writeLorebook(session, projectId, current, basis);
@@ -722,7 +725,7 @@ export class NovelStore {
       const { entries, basis } = await this.readLorebookStrict(session, projectId);
       const entry = this.findLoreEntry(entries, ref, projectId);
       if (patch.name !== undefined) entry.name = patch.name.trim();
-      if (patch.keys !== undefined) entry.keys = patch.keys.trim();
+      if (patch.keys !== undefined) entry.keys = normalizeLoreKeys(patch.keys);
       if (patch.content !== undefined) entry.content = patch.content;
       if (patch.enabled !== undefined) entry.enabled = patch.enabled;
       // toggle 在解析出唯一词条之后再翻转，避免部分匹配时读到错误的前值

@@ -83,6 +83,34 @@ function normalizeForMatch(text: string): string {
  * 无关键词的条目常驻；有关键词的条目仅当任一关键词（逗号分隔、大小写与全半角无关）
  * 出现在续写上下文里才注入。禁用或内容为空的条目一律排除。
  */
+/**
+ * 词条关键词的**读取**口径：按半角/全角逗号拆开、去空白、去空项。
+ * `selectLoreEntries` 与写入侧的 `normalizeLoreKeys` 必须共用它，否则两侧会对
+ * "这条有没有关键词"给出不同答案。
+ */
+export function splitLoreKeys(keys: string): string[] {
+  return keys
+    .split(/[,，]/)
+    .map((k) => k.trim())
+    .filter((k) => k !== "");
+}
+
+/**
+ * 词条关键词的**写入**口径：规范化成「逗号 + 空格」分隔的规范形式。
+ *
+ * 为什么必须在写入时做：注入侧按 `[,，]` 拆分并把"拆完为空"当成**常驻注入**。
+ * 于是 `keys = ",,"`、"、"、" , " 这类只有分隔符的输入会在列表里显示成"有关键词"，
+ * 实际却每回合把整条内容注入提示词——用户以为它有条目条件，其实没有。
+ * 规范化后这种输入变成空串，与"故意留空 = 常驻"是同一个显式状态。
+ */
+export function normalizeLoreKeys(keys: string): string {
+  return splitLoreKeys(keys).join(", ");
+}
+
+/**
+ * 选取要注入的词条：keys 为空 = 常驻注入；有关键词时仅当任一关键词
+ * 出现在续写上下文里才注入。禁用或内容为空的条目一律排除。
+ */
 export function selectLoreEntries(
   entries: PromptProject["lorebook"],
   contextText: string,
@@ -90,10 +118,7 @@ export function selectLoreEntries(
   const ctx = normalizeForMatch(contextText);
   return entries.filter((e) => {
     if (!e.enabled || !e.content.trim()) return false;
-    const keys = e.keys
-      .split(/[,，]/)
-      .map((k) => normalizeForMatch(k.trim()))
-      .filter(Boolean);
+    const keys = splitLoreKeys(e.keys).map((k) => normalizeForMatch(k)).filter(Boolean);
     if (keys.length === 0) return true; // 无关键词 = 常驻条目
     return keys.some((k) => ctx.includes(k));
   });
