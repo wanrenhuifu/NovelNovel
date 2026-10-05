@@ -56,6 +56,7 @@
     "test:race": "node scripts/verify-concurrency.mjs",
     "test:edge": "node scripts/verify-edge-cases.mjs",
     "test:contract": "node scripts/verify-doc-contract.mjs",
+    "test:package": "node scripts/verify-package.mjs",
     "test:perf": "node scripts/probe-dsh-perf.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm test && npm run typecheck"

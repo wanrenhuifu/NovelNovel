@@ -7,7 +7,7 @@
  *
  * 必须用 DSH 自带的 Electron Node 运行。
  */
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,6 +120,25 @@ for (const name of [...mentioned].sort()) {
   check(`README 提到的 ${name} 有对应工具`, false, "文档悬空");
 }
 check("README 里提到的工具名都能对上（或确认为技能名）", true);
+
+// README 里的**链接指向的仓库内文件**都要真实存在（悬空链接同样是文档破了契约）。
+// 只查 markdown 链接：反引号里的裸文件名多是"数据文件名"（`project.json`、`lorebook.json`），
+// 那些是用户数据、本来就不在仓库里，算进来只会误报。
+console.log("--- README 链接指向的仓库内文件 ---");
+{
+  const refs = new Set();
+  for (const match of readme.matchAll(/\]\(([^)]+)\)/g)) {
+    const target = match[1];
+    if (/^https?:/.test(target) || target.startsWith("#")) continue;
+    refs.add(target.split("#")[0]);
+  }
+  const missing = [...refs].filter((ref) => ref !== "" && !existsSync(join(repo, ref)));
+  check(
+    `README 链接的 ${String(refs.size)} 个仓库内文件都存在`,
+    missing.length === 0,
+    missing.length > 0 ? `缺失: ${missing.join(", ")}` : "",
+  );
+}
 
 rmSync(workspace, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "全部通过" : `${String(failed)} 项失败`}：${String(passed + failed)} 项检查`);
