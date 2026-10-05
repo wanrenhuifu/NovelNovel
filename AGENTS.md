@@ -318,15 +318,25 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   用户先调用任意 `novel_*` 工具（见 `unknown_workspace` 那条 403 与 `state.ts` 的文案）。
 - **从未跑过真实模型会话**：全部验证都在工具层，不调模型——技能路由、简报实际 token 量、
   模型会不会滥用 `action=write` 都还没有证据。
-- **客户端半边在运行中的 app 里没被注册（实测，未解决）**：第 16 轮用 `cordis_inspect_*` 读活的 GUI
+- **客户端半边在运行中的 app 里没被注册（实测，已解决）**：第 16 轮用 `cordis_inspect_*` 读活的 GUI
   查实——`sidebar.panellist` 的 `children` 为空、`main` 的 keyDomain 只有 `conversation`；
   而同一个 app 里宿主半边完全正常（8 个工具在 `listTools` 里、`/api/novel.projects` 返回 401、
   loader 行 `include:novelnovel` 是 `enabled/active`）。
-  **产物本身已排除嫌疑**：`npm run test:bundle-runs` 执行 `lib/client.js` 的 factory 并调 `apply`，
-  它正确地向两个插槽注册（id/key 一致）。时间线也排除了"HMR 没重扫"（产物时间早于 app 启动）。
-  下一步只有两条可走：①**重启 app**（本机只有这一个声明了 `dsh.client` 的第三方包，
-  这条路径从没被真正走通过，所以重启是最可能的分界点）；②在浏览器 console 看
-  `ClientPackageCompositionError` / `slot entry crashed` 之类的报错。
+  产物本身当时就被排除了嫌疑：`npm run test:bundle-runs` 执行 `lib/client.js` 的 factory 并调 `apply`，
+  它正确地向两个插槽注册（id/key 一致）。
+
+  **第 17 轮定位到真因并验证**：**app 进程启动于 16:49:14，而插件 17:12:56 才装进 profile**
+  ——启动时那条 loader 行还不存在，注册表构建时扫不到这个包，而**增量扫描永不重扫**。
+  重开后 `sidebar.panellist` 出现 `{ id: "dsh-novelnovel", order: 60, active: true }`、
+  `main` 出现 `{ key: "dsh-novelnovel", active: true }`，面板可用。
+
+  两条教训：
+  1. **别用"进程列表里第一个 DeepSeek Harness 的 StartTime"当 app 启动时间**——本机有多个同名进程
+     （wrapper / runner），我当时读到 21:10 就误判成"产物比 app 新"，把方向带偏了一轮。
+     要看主进程：拿 `Get-CimInstance Win32_Process` 里命令行含 `app.asar` 且不是 `runner.js` 的那个。
+  2. **"装完插件必须重开应用"不是可选的**：宿主半边照常工作、侧栏没面板、console 也无报错，
+     这种失败形态极难归因。README 的安装步骤与故障排查已写清（`cordis_inspect_query` 的
+     client `Slots.listSubTree root=sidebar.panellist` 是最快的判据）。
 
 ## 参考
 

@@ -45,8 +45,19 @@ dsh plugin --profile web add .            # 装成 link，指向这个工作树
 & "D:\DSH\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add D:\novelnovel
 # 3) 确认插件层进来了
 & "D:\DSH\resources\runtime\cli\bin\dsh.cmd" --profile desktop --dump-config | Select-String novelnovel
-# 4) 重开桌面端
+# 4) 重开桌面端 —— 这一步不能省，理由见下
 ```
+
+**第 4 步为什么不能省**：客户端插件（侧栏面板）的注册表只在**应用启动/插件层变动**时构建一次，
+之后是增量扫描，没有全量重扫路径。所以"装完插件不重开应用"的表现是：**宿主半边（`novel_*` 工具）
+正常工作、侧栏里却没有面板、浏览器 console 也没有报错**——很难归因。实测踩过一次：
+应用启动于 16:49、插件 17:12 装进 profile，于是注册表里根本没有这个包，直到重开才出现。
+（改 `src/` 后也一样：`npm run build` 之后要重开会话；只有产物内容变化才走 HMR。）
+
+> **面板没出现怎么办**：先确认已经**完全退出并重开**过桌面端。若仍没有，打开 DevTools（F12）
+> 看 console 有没有 `ClientPackageCompositionError` / `MissingClientBundleError` /
+> `missed the module table` / `slot entry crashed` 之一，按那个关键词报 issue。
+> 宿主半边是否正常可以这样快速判断：随便让模型调一次 `novel_project action=list`。
 
 `desktop` profile 是 `patchReload: live`，但改 `src/` 后仍然要 `npm run build` + 重开会话
 （profile 加载的是 `lib/` 产物）。
