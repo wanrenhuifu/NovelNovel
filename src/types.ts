@@ -35,6 +35,14 @@ export interface ChapterMeta {
   tags: string[];
   sortOrder: number;
   updatedAt: number;
+  /**
+   * 字数缓存 + 它对应的正文**字节数**。
+   *
+   * 只给「列目录/看总字数」用，**不是权威值**：读的时候会 `stat` 一次比对 `size`，
+   * 不一致就重读正文重算——所以直接改文件也不会显示旧字数（README 承诺过这条）。
+   * 两者都缺失时视为"没有缓存"，同样走重读。
+   */
+  wordsCache?: { words: number; size: number };
 }
 
 /** 章节元数据 + 正文（列目录时从文件读取，避免与直接改文件的 agent 失同步） */

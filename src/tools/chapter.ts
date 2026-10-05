@@ -106,7 +106,7 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
               ? total
               : Math.max(0, Math.trunc(args.limit));
           const window = metas.slice(from - 1, from - 1 + limit);
-          const chapters = await store.readChaptersIn(session, projectId, window);
+          const chapters = await store.readChapterBodies(session, projectId, window);
           const words = chapters.reduce((sum, chapter) => sum + chapter.words, 0);
           // 索引里列着、正文文件却不在的章节（`deleteChapter` 在"删正文"与"改索引"之间被中断
           // 就会留下这种半步状态）。不点名的话列表会把它显示成 `(empty)`，而 `action=read`

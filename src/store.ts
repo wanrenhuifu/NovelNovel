@@ -461,12 +461,14 @@ export class NovelStore {
   /** 列出全部作品（含章节数与总字数，供列表展示；解析引用请用 listProjectRefs） */
   async listProjects(session: FsSession): Promise<ProjectListing> {
     const scan = await this.scanProjectDirs<ProjectSummary>(session, async (project, dir, active) => {
-      // 一趟读到章节正文，同时得出章节数与总字数（不再重复读索引）
-      const chapters = await this.listChapters(session, dir);
+      // 只要章节数与总字数——走**不读正文**的那条路（按文件大小校验的缓存）。
+      // 原来这里 `listChapters` 把全书正文读一遍才算出一个总字数：
+      // 实测 300 章 912 次 ctx.fs 调用、257ms，而列作品列表只为看"哪本书有多大"。
+      const { chapterCount, words } = await this.listChapterWordCounts(session, dir);
       return {
         project,
-        chapterCount: chapters.length,
-        words: chapters.reduce((sum, chapter) => sum + chapter.words, 0),
+        chapterCount,
+        words,
         active: dir === active,
       };
     });
@@ -1089,32 +1091,120 @@ export class NovelStore {
   /** 章节列表（带正文与字数）：正文以文件为准，agent 直接改文件也能反映出来 */
   async listChapters(session: FsSession, projectId: string): Promise<Chapter[]> {
     const metas = await this.listChapterMetas(session, projectId);
-    const chapters: Chapter[] = [];
-    for (const meta of metas) {
-      const content = (await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session)) ?? "";
-      chapters.push({ ...meta, content, words: countWords(content) });
-    }
-    return chapters;
+    return this.readChapterBodies(session, projectId, metas);
   }
 
   /**
-   * 读**给定窗口**的章节正文。
+   * 各章字数（**不读正文**，走按文件大小校验的缓存），并返回总字数。
    *
-   * 与 `listChapters` 的区别：那个读全书，这个只读传进来的那几章。
-   * `novel_chapter action=list` 分页时用它——几千章的书只翻一页不该把整本读一遍
-   * （实测 60 章就 201 次 ctx.fs 调用，且每一章都进模型上下文）。
+   * 给"只想显示一本书有多大"的地方用（`novel_project action=list` 与 `/novel list`）——
+   * 它们原先为了一个总字数把全书正文读一遍（实测 300 章 912 次 ctx.fs 调用、257ms）。
+   * `novel_chapter action=list` **不走这条路**：它按 README 的承诺重新读文件，
+   * 所以那里显示的字数永远是正文的真实值。
    */
-  async readChaptersIn(
+  async listChapterWordCounts(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ chapterCount: number; words: number }> {
+    const metas = await this.listChapterMetas(session, projectId);
+    const sizes = await this.chapterBodySizes(session, projectId);
+    let words = 0;
+    const fresh: { id: string; words: number; size: number }[] = [];
+    for (const meta of metas) {
+      const size = sizes.get(meta.id);
+      const cached = meta.wordsCache;
+      if (size !== undefined && cached !== undefined && cached.size === size) {
+        words += cached.words;
+        continue;
+      }
+      // 大小对得上才算命中；文件不在（size undefined）读数就是 0，与"正文缺失"一致
+      const content = size === undefined ? "" : ((await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session)) ?? "");
+      const measured = countWords(content);
+      words += measured;
+      if (size !== undefined) fresh.push({ id: meta.id, words: measured, size });
+    }
+    if (fresh.length > 0) await this.rememberChapterWords(session, projectId, fresh);
+    return { chapterCount: metas.length, words };
+  }
+
+  /**
+   * 读**给定这批**章节的正文，同时算出字数（**总是读文件**，不使用字数缓存——
+   * 调用方要正文，缓存给不了）。
+   *
+   * 两个用途：`listChapters`（全书）与 `novel_chapter action=list` 的分页窗口。
+   * 分页时只读窗口——几千章的书只翻一页不该把整本读一遍（实测 60 章就 201 次 ctx.fs 调用，
+   * 且每一章都进模型上下文）。
+   */
+  async readChapterBodies(
     session: FsSession,
     projectId: string,
     metas: readonly ChapterMeta[],
   ): Promise<Chapter[]> {
     const chapters: Chapter[] = [];
+    const fresh: { id: string; words: number; size: number }[] = [];
+    const sizes = await this.chapterBodySizes(session, projectId);
     for (const meta of metas) {
       const content = (await this.ops.readTextOrNull(this.chapterFile(projectId, meta.id), session)) ?? "";
-      chapters.push({ ...meta, content, words: countWords(content) });
+      const words = countWords(content);
+      chapters.push({ ...meta, content, words });
+      // 顺手把字数缓存喂上：正文已经在手里了，白算不用可惜（下次只要字数的调用就能省掉重读）
+      const size = sizes.get(meta.id);
+      if (size !== undefined && (meta.wordsCache?.size !== size || meta.wordsCache.words !== words)) {
+        fresh.push({ id: meta.id, words, size });
+      }
     }
+    if (fresh.length > 0) await this.rememberChapterWords(session, projectId, fresh);
     return chapters;
+  }
+
+  /**
+   * 目录里各章节正文文件的字节数（一次 `listDir`，不是逐章 `stat`）。
+   * 返回的名字到大小的映射，键是**文件名去掉 `.md`**（即章节 id）。
+   */
+  private async chapterBodySizes(
+    session: FsSession,
+    projectId: string,
+  ): Promise<Map<string, number>> {
+    const sizes = new Map<string, number>();
+    const entries = await this.ops.listDir(this.chapterDir(projectId), session);
+    for (const entry of entries) {
+      if (entry.type !== "file" || entry.size === undefined) continue;
+      if (!entry.name.endsWith(".md")) continue;
+      sizes.set(entry.name.slice(0, -3), entry.size);
+    }
+    return sizes;
+  }
+
+  /**
+   * 把刚量出来的字数写回索引（尽力而为）。
+   *
+   * 纯优化：**失败不影响本次返回**（字数已经算出来了）。但写入必须**守卫**——这中间可能有并发
+   * 建章/删章，直接覆盖就会把新章节从索引里抹掉。所以重读索引、逐条比 id 与 size 都对得上才写，
+   * 对不上就整批放弃（下次再算一遍即可）。
+   */
+  private async rememberChapterWords(
+    session: FsSession,
+    projectId: string,
+    measured: readonly { id: string; words: number; size: number }[],
+  ): Promise<void> {
+    try {
+      await withStaleRetry(async () => {
+        const { index, basis } = await this.readChapterIndexVersioned(session, projectId);
+        const byId = new Map(measured.map((item) => [item.id, item]));
+        let changed = false;
+        const items = index.items.map((meta) => {
+          const hit = byId.get(meta.id);
+          if (hit === undefined) return meta;
+          if (meta.wordsCache?.size === hit.size && meta.wordsCache.words === hit.words) return meta;
+          changed = true;
+          return { ...meta, wordsCache: { words: hit.words, size: hit.size } };
+        });
+        if (!changed) return;
+        await this.writeChapterIndex(session, projectId, { items }, basis);
+      });
+    } catch {
+      // 缓存写不进去只是下次多读一遍正文，不该让"列个目录"失败
+    }
   }
 
   /**

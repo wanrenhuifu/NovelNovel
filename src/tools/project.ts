@@ -156,17 +156,18 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
 
         if (args.action === "show") {
           const project = await store.readProject(session, projectId);
-          const chapters = await store.listChapters(session, projectId);
+          // 只要章节数与总字数：走不读正文的那条路（原来把全书正文读一遍只为这两个数字，
+          // 实测 300 章 929 次 ctx.fs 调用；命中缓存后是十几次）
+          const stats = await store.listChapterWordCounts(session, projectId);
           const characters = await store.listCharacters(session, projectId);
           const lorebook = await store.readLorebook(session, projectId);
           const presets = await store.readPresets(session, projectId);
           const activePreset = store.activePreset(presets);
-          const words = chapters.reduce((sum, chapter) => sum + chapter.words, 0);
           return {
             action: args.action,
             summary: lines(
               `《${project.title}》 (${project.id})`,
-              `chapters: ${chapters.length}, words: ${words}`,
+              `chapters: ${stats.chapterCount}, words: ${stats.words}`,
               `characters: ${characters.length} (${characters.filter((c) => c.active).length} active)`,
               `lorebook: ${lorebook.length} entries (${lorebook.filter((e) => e.enabled).length} enabled)`,
               `preset: ${activePreset ? activePreset.name : "(built-in default)"}`,
@@ -177,8 +178,8 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
             details: {
               project_id: project.id,
               title: project.title,
-              chapters: chapters.length,
-              words,
+              chapters: stats.chapterCount,
+              words: stats.words,
               characters: characters.length,
               lorebook_entries: lorebook.length,
               active_preset: activePreset?.name ?? null,

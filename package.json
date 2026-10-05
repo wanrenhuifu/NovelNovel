@@ -57,6 +57,7 @@
     "test:edge": "node scripts/verify-edge-cases.mjs",
     "test:routes": "node scripts/verify-web-routes.mjs",
     "test:paging": "node scripts/verify-chapter-paging.mjs",
+    "test:words": "node scripts/verify-word-cache.mjs",
     "test:render": "node scripts/test-panel-render.mjs",
     "test:interaction": "node scripts/test-panel-interaction.mjs",
     "test:contract": "node scripts/verify-doc-contract.mjs",

@@ -251,6 +251,8 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 
 正文独立成文件是有意的：长篇小说用 `read`/`write` 工具直接改正文比走工具更顺手，
 而 `novel_chapter action=list` 会重新读文件统计字数，所以绕过插件直接改文件也不会失同步。
+（`novel_project action=list` / `action=show` 里的**总字数**走的是按文件大小校验的缓存——
+只在直接改文件时省一次重读，改过就重算，所以你改完文件再列作品看到的仍然是真实字数。）
 
 技能不放在数据目录里，因为它是整个工作区的写作方法，不属于某部作品——见「装你自己的写作方法」。
 
@@ -324,6 +326,7 @@ npm run test:render     # 面板渲染：react-dom/server 真渲染整棵面板�
 npm run test:interaction # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
 npm run test:routes     # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
 npm run test:paging     # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
+npm run test:words      # 字数缓存：直接改文件后字数仍会重算 + 缓存真的省调用
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
 ```
 

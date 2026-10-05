@@ -43,6 +43,7 @@ npm run test:render                 # 面板渲染：react-dom/server 真渲染�
 npm run test:interaction            # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
 npm run test:routes                 # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
 npm run test:paging                 # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
+npm run test:words                  # 字数缓存：改文件后字数仍重算（README 的承诺）+ 缓存真的省调用
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
@@ -290,7 +291,10 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 - **list/search 的最终上限**：`novel_chapter action=list` 支持 `from`/`limit`/`verbose=false`
   分页与精简（见下方实测数字），但**默认仍是全量且带预览**——模型不主动分页时照样会吃掉一大段上下文。
   `action=search` 有 `limit`（默认 50），命中的摘要长度固定，不需要分页。
-  `novel_project action=list` 会读遍全书算字数，几千章时也慢（`listChapterMetas` 那条路径已经只读元数据）。
+  `novel_project action=list` / `action=show` 的**总字数**已改成按文件大小校验的缓存
+  （`ChapterMeta.wordsCache`，一次 `listDir` 拿全目录大小），不再读遍全书：实测 300 章
+  从 923/929 次 `ctx.fs` 调用降到 15/29 次。`novel_chapter action=list` **不走缓存**，
+  它按 README 的承诺重新读文件。
 - **面板只读**：`src/client/` 的写作面板不做写入——写要与模型抢同一份稿子，得先设计冲突 UX
   并复用 CAS 语义，留到第二期。
 - **面板还不知道「当前工作区」**：HTTP 路由没有会话上下文，所以工作目录靠 `NovelStore` 记录的

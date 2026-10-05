@@ -173,6 +173,12 @@ export interface FsDirEntry {
   readonly name: string;
   readonly type: "file" | "directory" | "other";
   readonly target: FsTarget;
+  /**
+   * 真品会带（实测 dsh-fs-local：`{name, type, target, version, size}`），手写契约原先漏了。
+   * 用来做字数缓存的新鲜度判据：**一次 listDir 就能拿到全目录的大小**，
+   * 比逐文件 stat 便宜一个数量级。
+   */
+  readonly size?: number;
 }
 /** `fs/observed` 的载荷：确认存在（带版本）或确认不存在 */
 export type FsObservation =
