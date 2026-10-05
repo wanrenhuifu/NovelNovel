@@ -318,6 +318,15 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   用户先调用任意 `novel_*` 工具（见 `unknown_workspace` 那条 403 与 `state.ts` 的文案）。
 - **从未跑过真实模型会话**：全部验证都在工具层，不调模型——技能路由、简报实际 token 量、
   模型会不会滥用 `action=write` 都还没有证据。
+- **客户端半边在运行中的 app 里没被注册（实测，未解决）**：第 16 轮用 `cordis_inspect_*` 读活的 GUI
+  查实——`sidebar.panellist` 的 `children` 为空、`main` 的 keyDomain 只有 `conversation`；
+  而同一个 app 里宿主半边完全正常（8 个工具在 `listTools` 里、`/api/novel.projects` 返回 401、
+  loader 行 `include:novelnovel` 是 `enabled/active`）。
+  **产物本身已排除嫌疑**：`npm run test:bundle-runs` 执行 `lib/client.js` 的 factory 并调 `apply`，
+  它正确地向两个插槽注册（id/key 一致）。时间线也排除了"HMR 没重扫"（产物时间早于 app 启动）。
+  下一步只有两条可走：①**重启 app**（本机只有这一个声明了 `dsh.client` 的第三方包，
+  这条路径从没被真正走通过，所以重启是最可能的分界点）；②在浏览器 console 看
+  `ClientPackageCompositionError` / `slot entry crashed` 之类的报错。
 
 ## 参考
 
