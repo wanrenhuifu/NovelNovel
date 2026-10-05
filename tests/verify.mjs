@@ -894,6 +894,29 @@ assert.equal(JSON.parse(healedRaw).activeProject, orphanProject, "自愈后指�
 writeFileSync(workspaceFile, workspaceBackup, "utf8");
 ok("a corrupted workspace.json is rebuilt instead of blocking every pointer write");
 
+// ── 没有会话工作区时，写入必须被拒绝而不是落到 process.cwd() ──────
+// 探针实测过这条坑：exec.agent 缺失时 cwd 兜底到 process.cwd()（桌面端=应用安装目录），
+// 数据静默写进那里——用户工作区里什么都没有，那个目录也不在面板白名单里，既看不到也选不中。
+step("no-session writes are refused");
+const bareExec = { signal: new AbortController().signal };
+const bareWrite = await callWith(bareExec, "novel_project", { action: "create", title: "不该建成" }).then(
+  () => "成功了（闸没拦住！）",
+  (error) => String(error?.message ?? error),
+);
+assert.match(bareWrite, /no session workspace/, "无会话的写入应被明确拒绝");
+assert.equal(
+  existsSync(join(workspace, ".novelnovel", "projects")),
+  true,
+  "拒绝写入不该影响已有数据",
+);
+// 读路径不该被这道闸误伤：无会话也要能列出（读错目录只是读到空，无害）
+const bareRead = await callWith(bareExec, "novel_project", { action: "list" }).then(
+  () => "ok",
+  (error) => `失败: ${String(error?.message ?? error)}`,
+);
+assert.equal(bareRead, "ok", "无会话的读操作应当照常工作");
+ok("a write with no session workspace is refused instead of landing in process.cwd()");
+
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 
 step("plugin unload");

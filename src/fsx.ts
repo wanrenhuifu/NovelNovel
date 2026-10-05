@@ -36,6 +36,14 @@ function safeRealpath(path: string): string | undefined {
 export interface FsSession {
   /** 会话工作目录：相对路径的解析基准，也是沙箱判定边界 */
   cwd: string;
+  /**
+   * cwd 是**兜底**来的（调用上下文里没有 `agent.session.header.cwd`）。
+   *
+   * 这种会话只能用来读（读错目录只是读到空），**写入一律拒绝**：否则数据会静默落进
+   * `process.cwd()`——桌面端就是应用安装目录，而不是用户的工作区；那个目录也不在面板
+   * 白名单里，用户既看不到也选不中，等于投错了笔记本还不报错。
+   */
+  ephemeral?: boolean;
   signal?: AbortSignal;
   sandboxPolicy?: SandboxExecutionPolicy;
   /**
@@ -101,8 +109,13 @@ export class FsOps {
     const policy = this.ctx
       .get<SandboxPolicyService>("sandboxPolicy")
       ?.resolve(session ? { session } : {});
+    const cwd = session?.header.cwd;
+    // 判**空值**而不是 undefined：`dsh-tools` 在 exec 缺 agent 时会自己合成一个
+    // `{ header: { cwd: "" } }`，空串同样是"没有工作区"，只判 undefined 会让它溜过去。
+    const hasCwd = typeof cwd === "string" && cwd.trim() !== "";
     return {
-      cwd: session?.header.cwd ?? process.cwd(),
+      cwd: hasCwd ? cwd : process.cwd(),
+      ...(hasCwd ? {} : { ephemeral: true }),
       ...(signal ? { signal } : {}),
       ...(policy ? { sandboxPolicy: policy } : {}),
     };
@@ -111,6 +124,23 @@ export class FsOps {
   /** 由工具执行上下文构造会话 */
   sessionOf(exec: ToolRunContext): FsSession {
     return { ...this.sessionFor(exec.agent?.session, exec.signal), actor: exec };
+  }
+
+  /**
+   * 拒绝在"没有真实工作目录"的会话里做任何写入。
+   *
+   * 这类会话的 cwd 是 `process.cwd()` 兜底来的，而桌面端的进程工作目录是**应用安装目录**：
+   * 写入会静默落进那里，用户的工作区里什么都没有，且那个目录不在 Web 面板的白名单里
+   * （用户既看不到也选不中）。数据落错地方比直接报错糟得多，所以这里 fail fast。
+   * 触发条件：工具执行上下文里缺 `agent.session`，或命令处理器拿不到会话。
+   */
+  private assertWritable(session: FsSession): void {
+    if (session.ephemeral !== true) return;
+    throw new Error(
+      "refusing to write: this call has no session workspace, so the data would land in the " +
+        `process working directory (${session.cwd}) instead of the user's workspace. ` +
+        "Run the tool from a session (its cwd is the workspace root), or pass an explicit project path.",
+    );
   }
 
   async resolve(path: string, session: FsSession): Promise<FsTarget> {
@@ -203,6 +233,7 @@ export class FsOps {
     expected?: VersionBasis,
     overwrite = true,
   ): Promise<void> {
+    this.assertWritable(session);
     const target = await this.resolve(path, session);
     let intent: FsWriteIntent;
     if (!overwrite) {
@@ -309,6 +340,7 @@ export class FsOps {
 
   /** 删除文件（ctx.fs 无删除能力，走 node:fs；路径由 ctx.fs 解析并限定在工作区内） */
   async removeFile(path: string, session: FsSession): Promise<void> {
+    this.assertWritable(session);
     const target = await this.resolve(path, session);
     await this.assertInsideWorkspace(target, target.displayPath, "delete", session);
     await rm(this.ctx.fs.processPath(target), { force: true });
@@ -316,6 +348,7 @@ export class FsOps {
 
   /** 删除目录及其中全部内容 */
   async removeDir(path: string, session: FsSession): Promise<void> {
+    this.assertWritable(session);
     const target = await this.resolve(path, session);
     await this.assertInsideWorkspace(target, target.displayPath, "delete", session);
     await rm(this.ctx.fs.processPath(target), { recursive: true, force: true });
@@ -337,6 +370,7 @@ export class FsOps {
     session: FsSession,
     options: { overwrite?: boolean } = {},
   ): Promise<void> {
+    this.assertWritable(session);
     const target = await this.resolve(path, session);
     await this.assertInsideWorkspace(target, target.displayPath, "write", session);
     const info = await this.ctx.fs.stat(target, session.signal);

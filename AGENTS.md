@@ -31,8 +31,12 @@ node scripts/test-domain-utils.mjs  # 字数统计（标点与扩展 B 汉字）
 node scripts/test-client-manifest.mjs # 客户端半边清单：dsh.client 形态 + exports["./client"] + **产物必须存在**
 node scripts/test-client-bundle.mjs   # 客户端产物：包装格式、external 无漏项、slot 注册冒烟
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
-npm run test:dsh                    # 49 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 52 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
+npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
+npm run test:chapter-guard          # 真实 fs 语义：章节 id 不能当路径段（越界 id 读不到别的作品）
+npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
+npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 ```
 
@@ -71,7 +75,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `panel.tsx` 是只读视图、`state.ts` 是取数与选择状态、`api.ts` 走文档相对路径请求宿主路由、
   `styles.ts` 注入 CSS（`--dsw-*` token）、`env.d.ts` 补平台模块的类型声明。
   构建产物 `lib/client.js` 由 `build.client.mjs` 包装（**不是 ESM**，见「坑」）。
-- `tests/verify.mjs` 端到端（49 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（52 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`tests/verify-client-compose.mjs` 用宿主真实的
   `ClientModuleRegistry` 验证客户端半边能组合；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/verify-client-compose.mjs` /
@@ -155,9 +159,22 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   里点名；单张 `characters/*.json` / `lorebook.json` / `presets.json` 坏 → 跳过该文件（走
   `listCharactersDiagnosed` / `readLorebookDiagnosed` / `readPresetsDiagnosed`），写作简报仍能组装；
   `workspace.json` 读不出来 → 不致命，但多作品时解析「当前作品」必须显式传 `project=`
-  （宁可报错也不猜，避免写错作品）；`chapters/index.json` **损坏**直接报错，**缺失**时若
-  `chapters/` 已有 `.md` 则拒绝写入（`assertIndexRecoverable`）——静默当空索引会让下次建章
-  覆盖整份目录。数据文件是给人手改的，`readJson` 容忍 BOM/CRLF。
+  （宁可报错也不猜，避免写错作品）；`chapters/index.json` **损坏**直接报错。数据文件是给人手改的，
+  `readJson` 容忍 BOM/CRLF。
+  两条容易搞反、都踩过的口径：
+  - **写索引的安全闸按内容判，不按存在性判**（`assertNoOrphanChapters`，在 `writeChapterIndex` 里）：
+    索引被改成 `{}`/`[]`/`null` 时 JSON **能解析**、`basis.existed === true`，旧的存在性判定会放行，
+    接着写入「只含新章」的索引 → 全书大纲一次性消失。判据必须是「目录里有没有索引未引用的 `.md`」。
+  - **`workspace.json` 坏掉时要能自愈**：`readJsonVersioned` 的 `existed` 说的是「有没有读出值」，
+    不是「文件在不在」。坏文件若报 `existed: false`，写指针就会选 `createIfAbsent`、撞上那个坏文件
+    报 `FS_NOT_OBSERVED`（"cannot overwrite … without reading it first"），于是 `action=create` /
+    `action=use` 全失败、文案还指向"你没先读它"。所以 `readWorkspace` 单独读一次文本，
+    **坏文件保留它的版本当 CAS 基准**，写入直接覆盖修复。
+- **没有真实会话工作区时一律拒绝写入**（`FsOps.assertWritable`）：`sessionFor` 在
+  `header.cwd` 缺失或为空时把 cwd 兜底成 `process.cwd()` 并打上 `ephemeral: true`
+  （判**空值**而不是 `undefined`——`dsh-tools` 在 exec 缺 agent 时会自己合成 `{header:{cwd:""}}`）。
+  这种会话只能读：写入会静默落进 `process.cwd()`，桌面端即应用安装目录，用户工作区里什么都没有，
+  那个目录也不在面板白名单里（既看不到也选不中）。写/删/字节写入四个入口都过这道闸。
 - **目录名就是作品 id**：`scanProjectDirs` 以目录名为权威，`project.json` 里的 `id` 与它不一致时
   该作品被判为不可读并点名（否则「列表显示 A、写入落在 B」）。复制/改名作品目录是用户很自然的
   备份手段，这条防的就是它。
@@ -192,8 +209,13 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   id 一旦生成不再改名（`ctx.fs` 没有 rename，重命名会牵动全部引用）。
 - **写入顺序 = 失败后能看懂**：`createChapter` 先写正文再写索引（失败只留可见的孤儿 `.md`），
   `deleteChapter` 先删正文再改索引（反过来会「索引说没了、文件还在，且工具报错」）；
-  `importCharacter` 落盘前先 `readLorebookStrict` 预检，词条合并失败则**回滚卡片与头像**
-  （否则模型重试会再建一张同名卡，两张都 active 都进简报）。
+  `importCharacter` 落盘前先 `readLorebookStrict` 预检，并把「写头像 → 写卡片 → 合并词条」
+  三步放进**同一个 try**、共用同一个回滚：头像走 node:fs（不受沙箱与取消约束），卡片那步失败或
+  被取消会留下「有头像没 .json」的残骸，而读路径只扫 `*.json`，那个头像既不显示也不清理；
+  词条合并失败不回滚则模型重试会再建一张同名卡，两张都 active 都进简报。
+  另外 `createProject` 的四个初始文件一律 `overwrite: false`：slug 是「先 listDir 再挑一个没被占用的」，
+  并发建同名作品会选中同一个目录，不带这道闸时后写者会把先写者的 project.json / 世界书 / 章节索引
+  **全部静默覆盖**（两次都报成功）。
 - **角色卡**：`@lenml/char-card-reader` 把 V1 卡的 `spec` 标为 `"unknown"`；`cardImport.ts` 的
   `specToVersion` 把非 v2/v3 归为 v1，别"修复"它。头像一律以字节表达（PNG 卡取原文件字节，JSON 卡把
   `get_avatar()` 的 data URL 解成字节），落盘扩展名按媒体类型；**取不到头像时要给 `avatarNote`**
