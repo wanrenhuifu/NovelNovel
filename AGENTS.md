@@ -37,6 +37,7 @@ npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会�
 npm run test:chapter-guard          # 真实 fs 语义：章节 id 不能当路径段（越界 id 读不到别的作品）
 npm run test:race                   # 并发交错：CAS 真的挡住了吗（用 fs 钩子构造交错，CAS 正确性只能这样证明）
 npm run test:edge                   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 缺失正文的点名
+npm run test:contract               # 文档契约：README 工具表承诺的 action 必须真实存在（双向）
 npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
 npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
