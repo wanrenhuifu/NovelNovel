@@ -8,6 +8,6 @@ import { join } from "node:path";
 import { runInDshNode } from "./dsh-node-launcher.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const profileName = process.env.DSH_TEST_PROFILE ?? "novelnovel";
+const profileName = process.env.DSH_TEST_PROFILE ?? "nn";
 
 process.exit(runInDshNode(join(repoRoot, "tests", "perf-probe.mjs"), profileName));

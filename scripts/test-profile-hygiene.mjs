@@ -12,9 +12,9 @@
  * 普通 Node 即可（只读文件与目录）。
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
@@ -100,27 +100,51 @@ console.log("--- 动态：**每一个装了插件的 profile** 跑完都不该�
       e2eOk ? "" : "e2e 失败——插件在这个 profile 里可能没装好",
     );
 
-    // 客户端半边：用**宿主真实注册表**在这个 profile 下验证组合。
-    // 这是曾经导致"所有客户端插件都加载不出来"的那条路径，所以每个 profile 都要过一遍。
-    let composeOk = true;
-    let composeOut = "";
-    try {
-      composeOut = execFileSync("npm", ["run", "test:compose"], {
-        cwd: repo,
-        stdio: "pipe",
-        shell: process.platform === "win32",
-        env: { ...process.env, DSH_TEST_PROFILE: profileName },
-        encoding: "utf8",
-      });
-    } catch (error) {
-      composeOk = false;
-      composeOut = String(error?.stdout ?? "");
+    // 清单不变量：**装在这个 profile 里的那份包**，`dsh.client` 与 `exports["./client"]`
+    // 指向的产物必须是**同时成立**的。那是唯一能让**所有**客户端插件（含首方 UI）
+    // 一起加载不出来的形态（宿主 ClientModuleRegistry 构造期同步抛），所以这条要跟着 profile 走：
+    // 光看仓库里的 `npm test` 不够——被装进去的那一份才是运行时会读到的那一份。
+    // （曾经这里钉的是「不许声明 dsh.client」。现在面板回来了，不变量的**形状**没变：
+    //   声明与产物必须同时成立；只声明不产出仍然是禁区。）
+    const installedManifest = join(profileDir, "node_modules", "dsh-novelnovel", "package.json");
+    let clientDecl = null;
+    let manifestReadable = false;
+    let installedPkg = null;
+    if (existsSync(installedManifest)) {
+      try {
+        installedPkg = JSON.parse(readFileSync(installedManifest, "utf8"));
+        clientDecl = installedPkg.dsh?.client ?? null;
+        manifestReadable = true;
+      } catch {
+        manifestReadable = false;
+      }
     }
     check(
-      `[${profileName}] 客户端半边能组合（缺产物会让所有客户端插件都加载不出来）`,
-      composeOk,
-      composeOk ? "" : composeOut.split("\n").filter((l) => l.trim()).slice(-3).join(" | "),
+      `[${profileName}] profile 里那份包的清单可读`,
+      manifestReadable,
+      manifestReadable ? "" : `读不到或解析失败：${installedManifest}`,
     );
+
+    if (manifestReadable && clientDecl !== null) {
+      const exported = installedPkg.exports?.["./client"];
+      const rel = typeof exported === "string" ? exported : exported?.default;
+      const hasExport = typeof rel === "string" && rel !== "";
+      check(
+        `[${profileName}] 声明了 dsh.client 就有 exports["./client"]`,
+        hasExport,
+        hasExport ? "" : '宿主抛 declares dsh.client but exports no "./client" bundle',
+      );
+      if (hasExport) {
+        // 相对**安装后的包目录**解析（link: 安装时它指向工作树，正是运行时会读的那份）
+        const bundle = join(dirname(installedManifest), rel);
+        const size = existsSync(bundle) ? statSync(bundle).size : 0;
+        check(
+          `[${profileName}] client 产物真实存在且非空`,
+          size > 0,
+          size > 0 ? `${rel} ${String(size)} 字节` : `缺 ${bundle}——宿主抛 MissingClientBundleError，整个前端一起挂`,
+        );
+      }
+    }
   }
 }
 

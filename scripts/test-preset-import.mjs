@@ -1,33 +1,18 @@
 // 预设导入链路测试：SillyTavern 各类预设 JSON 解析 + story_string 渲染 + 提示词组装
 // 源码用无扩展相对导入（Vite 风格），Node 直跑 TS 不认，先经 esbuild 打包到临时文件再测真代码
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import { bundleSource } from "./bundle-source.mjs";
 
-const outFile = join(mkdtempSync(join(tmpdir(), "nn-preset-")), "bundle.mjs");
-await esbuild.build({
-  stdin: {
-    contents: [
-      'export { parsePresetFile } from "./src/domain/presetImport";',
-      'export { buildSystemPrompt, renderStoryString, buildContinueUserMessage, trimChatHistory } from "./src/domain/prompt";',
-    ].join("\n"),
-    resolveDir: process.cwd(),
-    loader: "ts",
-  },
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  outfile: outFile,
-});
+const { module } = await bundleSource("preset", [
+  'export { parsePresetFile } from "./src/domain/presetImport";',
+  'export { buildSystemPrompt, renderStoryString, buildContinueUserMessage, trimChatHistory } from "./src/domain/prompt";',
+].join("\n"));
 const {
   parsePresetFile,
   buildSystemPrompt,
   renderStoryString,
   buildContinueUserMessage,
   trimChatHistory,
-} = await import(pathToFileURL(outFile).href);
+} = module;
 
 let failed = 0;
 function check(label, ok, extra = "") {

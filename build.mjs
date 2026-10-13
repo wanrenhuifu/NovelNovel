@@ -6,6 +6,12 @@
 //    - @lenml/char-card-reader：第三方运行时依赖（AGPL），作为 dependencies 安装而非打进产物。
 // 2. `lib/client.js`——客户端半边（浏览器经典脚本），见 build.client.mjs。
 //
+// **两个产物必须同时成功**：宿主 `ClientModuleRegistry` 构造时会对每个声明了 `dsh.client`
+// 的 loader 行读 `exports["./client"]`，读不到就同步抛（`MissingClientBundleError` 聚合成
+// `ClientPackageCompositionError`）→ 注册表不注册 → **所有**客户端插件（含首方 UI）都加载不出来。
+// 所以这里不做「一个失败另一个继续」：任一 throw 就让整个 build 失败，装不上也就炸不了别人的界面。
+// 判据在 `scripts/test-manifest.mjs`（装之前跑，不依赖 harness）。
+//
 // 路径基于本文件位置解析，从任何目录调用 npm run build 都能正确落盘。
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";

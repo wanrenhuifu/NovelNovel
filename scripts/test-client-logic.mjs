@@ -5,36 +5,24 @@
 // 不是崩溃，所以既不会被冒烟测试抓到，也不会有报错。抽出来的这三个函数覆盖了其中的判定逻辑。
 //
 // 用普通 Node 跑（不需要 DSH 的 Electron Node）：它们不碰 harness。
-import esbuild from "esbuild";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { rmSync } from "node:fs";
+import { bundleSource } from "./bundle-source.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "nn-client-"));
-const outFile = join(dir, "bundle.mjs");
-await esbuild.build({
-  stdin: {
-    contents: [
-      'export { stepForKey, nextChapterId } from "./src/client/useChapterKeys";',
-      'export { buildRequestTarget, parseResponse, ApiFailure } from "./src/client/api";',
-    ].join("\n"),
-    resolveDir: process.cwd(),
-    loader: "ts",
+const { module, dir } = await bundleSource(
+  "client",
+  [
+    'export { stepForKey, nextChapterId } from "./src/client/useChapterKeys";',
+    'export { buildRequestTarget, parseResponse, ApiFailure } from "./src/client/api";',
+  ].join("\n"),
+  {
+    jsx: "automatic",
+    // React **打进测试包**：产物在 %TEMP% 里解析不到仓库的 node_modules。
+    // 这里只为跑纯函数，进程内的这份副本与别处无关。
+    logLevel: "error",
   },
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  jsx: "automatic",
-  // React **打进测试包**：产物在 %TEMP% 里解析不到仓库的 node_modules。
-  // 这里只为跑纯函数，进程内的这份副本与别处无关。
-  outfile: outFile,
-  logLevel: "error",
-});
-
-const { stepForKey, nextChapterId, buildRequestTarget, parseResponse, ApiFailure } = await import(
-  pathToFileURL(outFile).href
 );
+
+const { stepForKey, nextChapterId, buildRequestTarget, parseResponse, ApiFailure } = module;
 rmSync(dir, { recursive: true, force: true });
 
 let passed = 0;

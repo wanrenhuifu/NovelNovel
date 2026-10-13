@@ -4,9 +4,11 @@ DeepSeek Harness (dsh) 插件（npm 包 `dsh-novelnovel`）：把小说写成**�
 agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出。不发模型请求（模型由 harness 提供），
 数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
 
-两个半边：**宿主半边**（Node，工具/技能/命令 + 3 条只读 `/api/novel.*` 路由）与
-**客户端半边**（浏览器，DSH 侧栏的「NovelNovel」写作面板，只读）。客户端半边是可选能力——
-`dsh.client` 是唯一的声明点，但它一旦声明，产物缺失就会**启动即崩**（见「坑」）。
+**两个半边都做**：宿主半边是 Node 侧的工具/技能/命令/系统提示词段 + 3 条只读 `/api/novel.*` 路由；
+客户端半边是 Web 侧栏的只读面板（作品 / 章节 / 正文）。客户端半边是 **fail-closed** 的
+（`dsh.client` 一旦声明，`exports["./client"]` 指向的产物读不到就让**所有**客户端插件一起加载不出来），
+所以两个产物必须同时构建、装之前必须过 `scripts/test-manifest.mjs`、**开发迭代只装专用 profile（`nn`）**。
+曾经整体砍掉过客户端半边（理由与恢复清单见「坑」第一条），现在是恢复后的状态。
 
 写作方法由技能承载：6 个技能随包注册（rank 250），用户自己的方法用 `novel_skill` 导入到项目根的
 `.dsh/skills/`（rank 100，会覆盖同名内置技能）——那是唯一落在 `<dataDir>` 之外的写入。
@@ -18,9 +20,9 @@ MIT 许可（`LICENSE`）。分发走 `npm pack` 的 tarball（`prepack` 自动�
 ## 命令
 
 ```bash
-npm run build       # esbuild → lib/index.js（lib/ 不入库；改完 src 必须重建，profile 加载的是产物）
+npm run build       # esbuild → lib/index.js + lib/client.js（lib/ 不入库；改完 src 必须重建，profile 加载的是产物）
 npm run typecheck   # tsc -p .（严格模式，noUnusedLocals/Parameters，零错误才过）
-npm test            # 9 个纯逻辑单测（下面 9 个脚本）
+npm test            # 13 个纯逻辑单测（8 个 domain + 5 个客户端）
 node scripts/test-card-import.mjs   # 角色卡解析链路（PNG V2 / ccv3 双写 / JSON / V1 / 世界书并入 / 关键词拆分）
 node scripts/test-card-export.mjs   # 角色卡导出往返（编辑后再导出不回退、V1 字段不丢、非 PNG 头像占位、魔数嗅探）
 node scripts/test-preset-import.mjs # 预设导入解析 + story_string 渲染（含空变量报警与 {{char}}）+ 提示词组装 + 截断
@@ -28,31 +30,37 @@ node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/
 node scripts/test-reorder.mjs       # 章节排序：边界/位移/规范化/不可变性
 node scripts/test-skill-pack.mjs    # 技能包解析 + SKILL.md frontmatter 往返 + 项目根祖先链
 node scripts/test-domain-utils.mjs  # 字数统计（标点与扩展 B 汉字）+ 词条关键词匹配（全半角、空白键）
-node scripts/test-client-manifest.mjs # 客户端半边清单：dsh.client 形态 + exports["./client"] + **产物必须存在**
-node scripts/test-client-bundle.mjs   # 客户端产物：包装格式、external 无漏项、slot 注册冒烟
+node scripts/test-manifest.mjs      # **装机前的闸门**：dsh.client 与 exports["./client"] 产物必须同时成立（两个抛点都拦）
+node scripts/test-client-normalize.mjs   # 面板归一化：坏形状不抛错、缺字段给可用兜底
+node scripts/test-client-logic.mjs       # 客户端纯逻辑：键盘导航 / 请求地址拼装 / 响应解析
+node scripts/test-panel-render.mjs       # jsdom 真渲染整棵面板（不复制面板代码）+ 坏数据不崩
+node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘事件
+node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
-npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**
+npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
 npm run test:dsh                    # 54 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
-npm run test:compose                # 用宿主真实 ClientModuleRegistry 验证客户端半边能组合（走 DSH 的 Node）
+npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
+npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
+npm run test:primitives             # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
+npm run test:tokens                 # 面板用的 CSS 变量必须在首方产物里存在
+npm run test:routes                 # Web 路由：真实请求打过来，状态码与错误分级（含不泄露绝对路径）
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
 npm run test:chapter-guard          # 真实 fs 语义：章节 id 不能当路径段（越界 id 读不到别的作品）
 npm run test:race                   # 并发交错：CAS 真的挡住了吗（用 fs 钩子构造交错，CAS 正确性只能这样证明）
 npm run test:edge                   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 缺失正文的点名
 npm run test:contract               # 文档契约：README 工具表承诺的 action 必须真实存在（双向）
-npm run test:package                # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册
-npm run test:render                 # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
-npm run test:interaction            # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
-npm run test:routes                 # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
+npm run test:package                # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册（两个半边都要在）
 npm run test:paging                 # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
 npm run test:words                  # 字数缓存：改文件后字数仍重算（README 的承诺）+ 缓存真的省调用
 npm run test:lifecycle              # 生命周期：重复挂载会抛错、卸载后干净、能重新挂载
 npm run test:prompt                 # 系统提示词段：文本内容 + 组装位置 + 卸载后不留残留
 npm run test:skills                 # 自带技能：中文触发词必须在 description 里（whenToUse 不进提示词）
-npm run test:bundle-runs            # 执行交付产物本身：跑 lib/client.js 的 factory 并调 apply，断言注册了两个插槽
-npm run test:primitives             # 客户端 import 的组件库导出名必须在真实产物里存在
-npm run test:tokens                 # styles.ts 用到的 CSS 变量必须在首方产物里存在
 npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 ```
+
+`scripts/bundle-source.mjs` 是纯逻辑单测共用的打包器（把 `src/` 的 TS 打成临时 ESM 再 import 真代码）。
+它用 `write: false` + 手工落盘：**esbuild 的子进程在受限环境下写不了工作区外的临时目录**
+（报 `Access is denied`，而同一个路径 `node:fs` 写得进去）。别再改回 `outfile:`。
 
 端到端与性能探针统一走 `npm run test:*` 的启动器（`scripts/dsh-node-launcher.mjs`）：它们用
 **DSH 自带的 Electron Node** 跑 `tests/verify.mjs` / `tests/perf-probe.mjs`（harness 包在 `app.asar`
@@ -60,9 +68,14 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 **cwd 绝不能是 profile 目录**：曾经是，于是走 `process.cwd()` 的探针把三本空作品写进了用户的
 `~/.dsh/profiles/<name>/`；插件与 harness 的解析靠 profile 锚点与安装路径、**不依赖 cwd**，
 所以换成临时目录不影响任何解析（`npm run test:hygiene` 守着这条，静态+动态两道）。
-安装目录自动探测，
-可用 `DSH_INSTALL` 指定；**测试用哪个 profile 只认 `DSH_TEST_PROFILE`（默认 novelnovel）**——
+安装目录自动探测（`$DSH_INSTALL` → 从 `$DSH_ENTRY` 反推 → `%LOCALAPPDATA%\Programs\*` → 常见位置；
+本机的 Electron 用户级安装落在 `D:\Users\qm\AppData\Local\Programs\DeepSeek Harness`，**不在** `D:\DSH`，
+所以自动探测那几项少了就会每次都要手动设 `DSH_INSTALL`）；
+**测试用哪个 profile 只认 `DSH_TEST_PROFILE`（默认 `nn`）**——
 不读会话里的 `DSH_PROFILE`（桌面端会话里它是 `desktop`，插件不一定装在那儿）。
+`DSH_TEST_PROFILE` 由 `scripts/verify-*.mjs` 读，再作为 `DSH_PROFILE` 注入子进程；
+**`tests/` 里的脚本要读 `DSH_PROFILE`**（那是启动器保证注入的那个）——
+`tests/verify-client-compose.mjs` 曾经读 `DSH_TEST_PROFILE` 的字面默认值，默认名一漂移整条测试就空转了。
 无 lint 配置。仓库是 git 仓库（origin = `wanrenhuifu/NovelNovel`），提交信息沿用
 `feat: 中文摘要（、分隔）` + `- 主题：说明` 列表体。
 
@@ -76,6 +89,14 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `src/skillStore.ts` 管**项目级**技能文件（项目根 `.dsh/skills/` 的列出/导入/导出/删除，加载仍由
   harness 负责，不新增技能机制）；`src/fsx.ts` 封装 `ctx.fs`（解析/读写/目录/删除/二进制）与会话构造；
   `src/types.ts` 落盘结构。
+- `src/clientApi.ts` 宿主侧给面板的 3 条只读接口（`/api/novel.projects` / `novel.project` /
+  `novel.chapter`，**path 精确匹配**、无鉴权——鉴权归 connection 的 fence）。
+  存 `NovelStore.workspaces`（cwd → **真 Session 对象**）与 `workspaceOf` / `knownWorkspaces`
+  也在这个用途上：HTTP 路由没有会话上下文，cwd 只能由前端告知并**按白名单校验**。
+- `src/client/**` 浏览器半边（React）：`index.tsx` 是插件入口（`apply(ctx)` + `inject = ["slots"]`
+  + 错误边界）、`panel.tsx` 面板视图、`state.ts` store 与归一化、`normalize.ts` 坏形状兜底、
+  `api.ts` 请求拼装/响应解析、`useChapterKeys.ts` 键盘导航、`styles.ts` 面板 CSS、`env.d.ts` 手写类型声明。
+  两个插槽：`sidebar.panellist`（图标）与 `main`（面板，`key` 与侧栏 `id` 必须一致——那是两者唯一的联系）。
 - `src/tools/<name>.ts` 一个工具一个文件，`src/tools/index.ts` 注册；`src/tools/shared.ts` 放统一输出
   形状（`TEXT_OUTPUT`/`textRender`）、`lines`/`preview`/`requireFields` 与 `ToolDeps`。
 - `src/skills.ts` 枚举 `skills/*/SKILL.md` 并 `ctx.skills.register` 运行时注册（另导出
@@ -87,20 +108,12 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `src/clientApi.ts` 宿主侧的 Web 接口：3 条**只读** `/api/novel.*` 路由（作品列表 / 作品详情 /
-  章节正文）。复用 `NovelStore`，不重写领域逻辑；鉴权完全交给 connection 的 fence。
-- `src/client/` **客户端半边**（浏览器）：`index.tsx` 注册 `sidebar.panellist` 图标与 `main` 面板、
-  `panel.tsx` 是只读视图、`state.ts` 是取数与选择状态、`api.ts` 走文档相对路径请求宿主路由、
-  `styles.ts` 注入 CSS（`--dsw-*` token）、`env.d.ts` 补平台模块的类型声明。
-  构建产物 `lib/client.js` 由 `build.client.mjs` 包装（**不是 ESM**，见「坑」）。
 - `tests/verify.mjs` 端到端（54 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
-  （锚点顺序、`registerHarnessHook` 见「坑」）；`tests/verify-client-compose.mjs` 用宿主真实的
-  `ClientModuleRegistry` 验证客户端半边能组合；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
-  Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/verify-client-compose.mjs` /
-  `scripts/probe-dsh-perf.mjs` 是它的三个入口；`scripts/client-platform-modules.mjs` 是
-  external 白名单的**单一来源**（构建与测试共用）；`tests/fixtures/stale-harness.mjs` +
-  `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；`samples/preset-example.json`
-  供测试导入预设用。
+  （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
+  Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
+  `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
+  `samples/preset-example.json` 供测试导入预设用；`scripts/restore-desktop-bundle.ps1` 是装进
+  desktop profile 的等待脚本（应用退出后自动入列并核对，见「坑」）。
 
 ## 约定
 
@@ -136,24 +149,60 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   路由到应用安装，所以新增 `@deepseek-ai/*` 的 import 时**必须同步加进 peerDependencies**，否则会
   落到工作树里那份。
   `@lenml/char-card-reader` 是 AGPL，只做 external + `dependencies`，不打进产物。
-- **客户端半边：声明了就必须有产物，否则启动即崩**（踩过一次，整台机器的前端都打不开）。
-  `package.json` 的 `dsh.client` 是**唯一**声明点，宿主 `ClientModuleRegistry` 构造时会扫每个 loader 行，
-  对声明了 `dsh.client` 的包读 `exports["./client"]` 指向的文件：**读不到就抛
-  `MissingClientBundleError`，聚合成 `ClientPackageCompositionError` 同步抛出** → 注册表不注册 →
-  `/plugins` 路由不存在 → **所有客户端插件（含首方）都加载不出来**。所以：
-  - 产物 `lib/client.js` 由 `build.client.mjs` 生成，`lib/` 不入库，**新克隆必须先 `npm run build`**；
-  - `npm test` 里的 `test-client-manifest.mjs`（清单层，纯 Node）与 `npm run test:compose`
-    （用宿主**真实注册表**验证组合，走 DSH 的 Node）就是为这条设的，改客户端半边后两个都要跑；
-  - 产物的形态是**经典 script**，不是 ESM 也不是 Node CJS 模块：
-    `window.__ModuleLoader__.load({ id: "<包名>", factory: (require) => { var module = {exports:{}}; …; return module.exports } })`，
-    `factory` 只收 `require` 一个参数；
-  - `require` 的说明符必须是外壳**静态模块表**里的精确键（`scripts/client-platform-modules.mjs`
-    是唯一来源），写成 `"…/client"` 之类的子路径会在**浏览器 console** 报
-    `missed the module table`——服务端完全看不到这条错误，所以它由 `test-client-bundle.mjs` 兜住；
-  - `platform` 不是 `"web"` 会被**静默**当成非客户端包（无报错、页面里也没有），最难查的一种；
-  - 组合与 bundle 清单是**增量扫描**（只在 fiber 构建/销毁时重扫，没有全量重扫路径）：新装包或
-    首次补上产物后**必须重启应用**，之后改产物才走 HMR；而本机没有跑 `pnpm run dev:web`，
-    所以 HMR 也不会重建产物——**每次改客户端代码都要 `npm run build`，再重启应用**。
+- **客户端半边是 fail-closed 的**（踩过一次：整台机器的前端都打不开）。宿主 `ClientModuleRegistry`
+  **构造函数里**会扫每个 loader 行，对声明了 `dsh.client` 的包读 `exports["./client"]` 指向的文件：
+  两个抛点 —— `declares dsh.client but exports no "./client" bundle`（清单声明了却没写 exports）
+  与 `MissingClientBundleError`（写了 exports 但**文件读不到**，ENOENT）；两者聚合进
+  `ClientPackageCompositionError` 后 **同步抛出** → 服务起不来 → `/plugins` 路由与
+  `window.__DSH_BOOT__` 注入都不发生 → **所有客户端插件（含首方 UI）都加载不出来**。
+  一个包缺产物能拖垮别人的界面，现场看起来像"插件之间冲突"。所以本包用三道闸：
+  ① `build.mjs` 两个产物同时成功（任一 throw 整个 build 失败）；
+  ② `scripts/test-manifest.mjs` + `tests/verify-package.mjs` + `scripts/test-profile-hygiene.mjs`
+     在装机前把上述两个抛点变成红灯（清单、exports 形态、**产物真实存在且非空**、产物形态自证）；
+  ③ 开发迭代只装专用 profile（`nn`），不装日常界面。
+  产物形态是经典 script `window.__ModuleLoader__.load({id, factory})`（**不是 ESM**），
+  `require` 的说明符必须是外壳**静态模块表**的精确键——写错只在**浏览器 console** 报
+  `missed the module table`，服务端完全看不到。那份表的唯一来源是
+  `scripts/client-platform-modules.mjs`（实测取自 `dsh-web-frontend/dist/assets/index-*.js` 的 `rM()`；
+  **升级 DSH 后第一个要复核的就是它**）。清单里 `dsh.client.inject` 列的平台包**不要**写进
+  `peerDependencies`：它们由外壳的静态表在浏览器里提供，不走 Node 解析（写进去反而会让 Desktop 的
+  `routeLinked` 去应用安装里找它们）。
+- **宿主给客户端的接口要 `ctx.inject(["connection"], …)`，不能在 `apply` 里直接 `ctx.get("connection")`**
+  （实测踩到，且表现极难归因）：插件行在 loader 里比 Web 那几行**早**，而 `ctx.get` 是**只查一次、
+  拿不到就没了**——结果是三条 `/api/novel.*` 路由永远不注册，面板每次取数都 404，
+  **而宿主工具一切正常**（`novel_*` 能用、`/novel` 能用），现场看起来像"面板坏了"。
+  `ctx.inject` 是软挂载：服务还不存在时把回调排队，等 provide 之后执行。
+  同一条形状的坑在 skills / commands / systemPrompt 上已经各踩过一次。
+- **`/api/novel.*` 的 cwd 白名单是安全边界，别简化**：HTTP 请求**没有会话上下文**，工作目录只能由
+  前端告知；"前端说什么就信什么"等于把任意目录读取开放给任何拿到会话 cookie 的页面。
+  所以 `NovelStore.workspaceOf` 只认 `remember()` 记过的「本进程里真会话用过的工作目录」，
+  且复用的是**当初那个真 Session 对象**——`ctx.sandboxPolicy.resolve({ session })` 要读会话的
+  `snapshotEvents()`，喂 `{ header: { cwd } }` 的伪造体会直接 `TypeError`，三条路由全 500/400
+  （`npm run test:sandbox` 守着这条）。白名单为空时回 **403 `unknown_workspace`** 并告诉用户
+  "先跑一次 novel_* 工具"，而不是猜一个目录去读。前端把这条 403 翻成可读的中文提示
+  （`src/client/state.ts` 的 `describe`）——首次打开看到它是**设计如此**，不是故障。
+- **`scripts/restore-desktop-bundle.ps1` 必须存成 UTF-8 带 BOM**：本机只有 Windows PowerShell 5.1
+  （装了 pwsh 7 之后 DSH 的执行器才会用它；执行器解析顺序是 `%ProgramFiles%\PowerShell\7\pwsh.exe` →
+  PATH → 5.1）。5.1 按 ANSI 解码无 BOM 的脚本，中文注释会让它直接报语法错；用编辑工具改完这个文件
+  要重新补 BOM。同理：**绝不能用 `Set-Content -Encoding UTF8` 写 profile 的 `package.json`**
+  （5.1 的 UTF8 带 BOM，宿主 `JSON.parse` 会失败），也不能用 `Get-Content` 读含中文的
+  `package.json`（无 BOM 的 UTF-8 会被按 ANSI 解码成乱码）——脚本里统一走 .NET。
+- **「必须先完全退出应用才能改 desktop profile」这条被实测推翻**（`restore-desktop-bundle.ps1` 的注释
+  与 README 旧文都这么说，但没人验过）：实测**应用运行中**对 profile 的 `package.json` 做
+  `[System.IO.File]::Open($f,'Open','ReadWrite','None')` **能拿到独占句柄**——应用不持有它的文件锁；
+  `dsh plugin --profile desktop remove <pkg>` 也**在应用运行中一次成功**（依赖与 lockfile 都清掉了）。
+  所以「等应用退出」不是硬前提，真正需要重启的理由只剩一条：**插件只在启动时装载**。
+  三条附带结论（都踩过）：
+  - **别拿「进程数归零」当退出判据**：这台机器上应用重启的窗口**短于 2 秒轮询间隔**，
+    等进程的脚本会永远等不到那一刻——实测白等 226 秒，那组进程一次都没换过（用户确实退了托盘）。
+  - **`--dump-config` 对 desktop 用不了**：`dsh --profile desktop --dump-config` 会被
+    `rejectElectronProfile` 拒掉（`profile "desktop" is managed exclusively by the Electron
+    application`）——**只有 `plugin` 子命令**（wrapper 内部 `manageDesktopProfile: true`）放行。
+    要核对 desktop 的组合树就读 `package.json` 的 `dsh.profile.bundles` 原文，别指望 dump。
+  - **`pnpm remove` 不会清理 `link:` 依赖的 junction**（`nodeLinker: hoisted`）：依赖与 lockfile 都干净了，
+    `node_modules\<pkg>` 仍指向工作树，得手动删。删它用
+    `[System.IO.Directory]::Delete($path, $false)` 并先自检 `LinkType -eq 'Junction'`
+    ——**recursive 必须为 false**，目标是整个工作树，`Remove-Item -Recurse` 的行为不值得赌。
 - **工具参数名就是 schema 键**：`defineTool` 的 `args` 类型由 `parameters` 推导（`contract.ts` 的
   `InferArgs`），schema 里写 `author_note`/`prev_chapters` 这类 snake_case，代码里就必须同名访问
   ——改 schema 键名不改进代码会直接 tsc 报错（有意的防漂移，别用 `any` 绕）。
@@ -285,14 +334,28 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 - **安装与调试**：改完 `src/` 必须 `npm run build`（`lib/` 不入库，profile 加载的是产物）；
   `link:` 安装后改动只需重建 + 重开 dsh 会话，tarball 安装则要重新 `npm pack` + `dsh plugin add`
   ——`prepack` 挂的就是 `npm run build`，所以 `npm pack` 出来的一定带 `lib/`，不必先手动构建。
-  **装进哪个 profile 有讲究**：只有 `web`/`headless`/`sdk`/`sdk-minimal`/`acp` 这五个名字会从自带
+  **装进哪个 profile 有讲究**：只有 `web`/`headless`/`sdk`/`sdk-minimal`/`acp` 这五个**名字**会从自带
   模板自动初始化，其他名字只得到 `dsh-base` 一个 bundle——而 base 只是内核（无 Host、无 HTTP、
-  无 runner），没有可交互面。
+  无 runner），没有可交互面。自定名要走启动器的正规出口：
+  `dsh --profile <name> --from-default-profile web --dump-config`
+  （实现是 `profile-boot` 的 `initializeProfileFromDefault`：校验模板名 → 拒绝自带名 → 独占建目录 →
+  复制**模板的组合包列表** → 失败整个回滚；只复制包清单，**不**复制同名 profile 的本地状态）。
+  加 `--dump-config` 就是「只创建、不起服务」。本仓库的开发迭代 profile 叫 **`nn`**，
+  测试默认也指向它（`DSH_TEST_PROFILE`）。
   **`desktop` 是另一回事**：桌面端应用独占它（`dsh --profile desktop` 启动会被拒），但**插件管理支持**
   ——桌面端自带的 CLI wrapper（`<安装>\resources\runtime\cli\bin\dsh.cmd`，内部以
-  `manageDesktopProfile: true` 调 `runCli`）允许 `dsh plugin --profile desktop add|remove`，
-  前提是先**完全退出**应用（它持有 profile 的 `package.json` 锁）。别照旧文档说「会被拒」。
-  插件的观测口径（工具、技能、命令）都以 `npm run test:dsh` 为准。
+  `manageDesktopProfile: true` 调 `runCli`）允许 `dsh plugin --profile desktop add|remove`。
+  **不需要先退出应用**（实测：应用运行中 `dsh plugin --profile desktop remove` 一次成功，
+  profile 的 `package.json` 也没有被应用锁住——详见「坑」里那条纠正）。别照旧文档说「会被拒」，
+  也别照旧文档说「必须先退出」。
+  **本机 `dsh` 与 `pnpm` 都不在 PATH 上**，一律走那个 wrapper。
+  **装完必须重开才生效**：客户端注册表只在启动时构建一次（之后是 `internal/plugin` 增量扫描），
+  所以"装完不重开"的表现是**宿主工具正常、侧栏没有面板、console 无报错**——
+  这个形态实测踩过一次（应用 16:49 启动、插件 17:12 装进 profile）。
+  `link:` 装法下**重建产物即生效**，所以别把开发中的插件装进日常 profile。
+  插件的观测口径（工具、技能、命令）都以 `npm run test:dsh` 为准；
+  「面板真的注册上了」要用 `npm run test:compose`（真注册表组合）或对运行中的 server
+  取 `index.html` 里的 `globalThis["__DSH_BOOT__"]` 看本包那一行——**不要只看截图**。
 
 ## 还没做（已知缺口，改到附近时顺手评估）
 
@@ -311,41 +374,28 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   （`ChapterMeta.wordsCache`，一次 `listDir` 拿全目录大小），不再读遍全书：实测 300 章
   从 923/929 次 `ctx.fs` 调用降到 15/29 次。`novel_chapter action=list` **不走缓存**，
   它按 README 的承诺重新读文件。
-- **面板只读**：`src/client/` 的写作面板不做写入——写要与模型抢同一份稿子，得先设计冲突 UX
-  并复用 CAS 语义，留到第二期。
-- **面板还不知道「当前工作区」**：HTTP 路由没有会话上下文，所以工作目录靠 `NovelStore` 记录的
-  「工具真正用过的目录」当白名单，单工作区时自动解析。多工作区且工具尚未跑过时面板只能提示
-  用户先调用任意 `novel_*` 工具（见 `unknown_workspace` 那条 403 与 `state.ts` 的文案）。
+- **面板是只读的（有意，不是缺口）**：写操作要与模型抢同一份稿子，得先设计冲突 UX 并复用 CAS 语义。
+  下一期做「能改卡」时有个**必须单独验**的洞：写路径需要 `actor` 才能 `emit('fs/observed')`，
+  而 HTTP 路由**没有 exec**——观测策略不会记录这些写入，于是首方 `write`/`edit` 之后会被要求先读一遍。
+  别想当然地照搬工具的写路径。会话里要看状态用 `/novel`（不经过模型）或 `novel_project action=show`。
 - **从未跑过真实模型会话**：全部验证都在工具层，不调模型——技能路由、简报实际 token 量、
   模型会不会滥用 `action=write` 都还没有证据。
-- **客户端半边在运行中的 app 里没被注册（实测，已解决）**：第 16 轮用 `cordis_inspect_*` 读活的 GUI
-  查实——`sidebar.panellist` 的 `children` 为空、`main` 的 keyDomain 只有 `conversation`；
-  而同一个 app 里宿主半边完全正常（8 个工具在 `listTools` 里、`/api/novel.projects` 返回 401、
-  loader 行 `include:novelnovel` 是 `enabled/active`）。
-  产物本身当时就被排除了嫌疑：`npm run test:bundle-runs` 执行 `lib/client.js` 的 factory 并调 `apply`，
-  它正确地向两个插槽注册（id/key 一致）。
-
-  **第 17 轮定位到真因并验证**：**app 进程启动于 16:49:14，而插件 17:12:56 才装进 profile**
-  ——启动时那条 loader 行还不存在，注册表构建时扫不到这个包，而**增量扫描永不重扫**。
-  重开后 `sidebar.panellist` 出现 `{ id: "dsh-novelnovel", order: 60, active: true }`、
-  `main` 出现 `{ key: "dsh-novelnovel", active: true }`，面板可用。
-
-  两条教训：
-  1. **别用"进程列表里第一个 DeepSeek Harness 的 StartTime"当 app 启动时间**——本机有多个同名进程
-     （wrapper / runner），我当时读到 21:10 就误判成"产物比 app 新"，把方向带偏了一轮。
-     要看主进程：拿 `Get-CimInstance Win32_Process` 里命令行含 `app.asar` 且不是 `runner.js` 的那个。
-  2. **"装完插件必须重开应用"不是可选的**：宿主半边照常工作、侧栏没面板、console 也无报错，
-     这种失败形态极难归因。README 的安装步骤与故障排查已写清（`cordis_inspect_query` 的
-     client `Slots.listSubTree root=sidebar.panellist` 是最快的判据）。
+- **面板只在 `nn` 里验证过**：`npm run test:compose` / `test:bundle-runs` 证明真注册表能组合并服务产物，
+  起 `nn` 后也核过 `__DSH_BOOT__` 里有本包那一行、三条路由返回预期状态码；但
+  **「装进 desktop profile → 重启应用 → 侧栏真的出现图标」这一步还没做过**——
+  那需要先完全退出应用（`scripts/restore-desktop-bundle.ps1` 就是为这一步写的）。
 
 ## 参考
 
 - `README.md`：安装（含桌面端）、工具表、配置、数据布局、设计说明。
 - dsh 插件开发文档：`docs/user/develop/**` 与 `docs/subsystems/*.md` 只存在于上游源码仓库
-  （github.com/deepseek-ai/deepseek-harness），**本机安装里没有**——`D:\DSH\resources\app.asar`
-  内只有 `lib/` 与 `node_modules/`，既没有 `docs/` 也没有 `src/`、`apps/`、`packages/`。
-  真实 API 以安装内 `@deepseek-ai/*/lib/types/*.d.ts`、打包后的 `lib/*.js`，
-  以及运行中的 `cordis_inspect_*` 探针（Service / Event / Config / Slot）为准。
+  （github.com/deepseek-ai/deepseek-harness），**本机安装里没有**——安装目录
+  （本机是 `D:\Users\qm\AppData\Local\Programs\DeepSeek Harness`）内只有 `resources/app.asar`
+  与 `resources/app.asar.unpacked`，asar 里只有 `lib/` 与 `node_modules/`，既没有 `docs/` 也没有
+  `src/`、`apps/`、`packages/`。读 asar 内容要么用 DSH 自带的 Electron Node（`ELECTRON_RUN_AS_NODE=1`），
+  要么自己解析 asar 头（8 字节 pickle 前缀 + JSON 头；第二层的字符串长度在偏移 4、JSON 从偏移 8 开始）。
+  真实 API 以 asar 内 `@deepseek-ai/*/lib/*.js` 与 `lib/types/*.d.ts`，以及桌面端 CLI 的
+  `--dump-config` 为准（`dsh --profile desktop` 会被拒，但 `dsh plugin --profile desktop ...` 可以）。
 - 技能子系统（rank 表、frontmatter 键、注册与覆盖语义）：看安装内 `@deepseek-ai/dsh-skill` 与
   `@deepseek-ai/dsh-skill-filesystem` 的 `lib/index.js`（rank 常量、frontmatter 键的合法性校验都在里面），
   或上游源码仓库的 `docs/subsystems/skills.md`。

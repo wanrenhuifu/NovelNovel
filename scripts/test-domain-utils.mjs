@@ -1,26 +1,13 @@
 // domain 纯逻辑的杂项测试：字数统计与词条关键词匹配。
 // 这两条都是「数字报给用户」「设定决定注不注入」的地方，静默错了很难被发现。
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import { bundleSource } from "./bundle-source.mjs";
 
-const outFile = join(mkdtempSync(join(tmpdir(), "nn-domain-")), "bundle.mjs");
-await esbuild.build({
-  stdin: {
-    contents:
-      'export { countWords } from "./src/domain/utils";\n' +
-      'export { selectLoreEntries, normalizeLoreKeys, splitLoreKeys } from "./src/domain/prompt";',
-    resolveDir: process.cwd(),
-    loader: "ts",
-  },
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  outfile: outFile,
-});
-const { countWords, selectLoreEntries, normalizeLoreKeys } = await import(pathToFileURL(outFile).href);
+const { module } = await bundleSource(
+  "domain",
+  'export { countWords } from "./src/domain/utils";\n' +
+    'export { selectLoreEntries, normalizeLoreKeys, splitLoreKeys } from "./src/domain/prompt";',
+);
+const { countWords, selectLoreEntries, normalizeLoreKeys } = module;
 
 let failed = 0;
 const check = (label, actual, expected) => {

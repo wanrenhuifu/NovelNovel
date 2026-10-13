@@ -8,7 +8,7 @@
  * 必须用 DSH 自带的 Electron Node 运行。
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -52,22 +52,26 @@ const skillDirs = readdirSync(join(pkgDir, "skills"));
 check("自带技能目录数 = 6", skillDirs.length === 6, skillDirs.sort().join(", "));
 
 const manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
-const clientEntry = join(pkgDir, manifest.exports["./client"]);
-check("manifest 里 client 产物存在", readFileSync(clientEntry).length > 0, manifest.exports["./client"]);
+/*
+ * 分发包里**两个半边都必须齐全**，而且必须同时成立。
+ *
+ * 这条曾经反过来钉（「纯宿主插件：不许有 dsh.client」）。不变量的**形状**没变，
+ * 只是方向换了：真声明了客户端半边却没有产物，宿主 ClientModuleRegistry 构造时会
+ * 同步抛 MissingClientBundleError → 注册表不注册 → **所有**客户端插件（含首方 UI）
+ * 一起加载不出来。所以 tarball 里少一个 `lib/client.js` 就是"装上去整台前端打不开"，
+ * 必须在分发冒烟这一层拦住（`npm pack` 的 files 是白名单，少写一项就会漏）。
+ */
+const clientDecl = manifest.dsh?.client;
+check("manifest 声明了 dsh.client", clientDecl !== undefined);
+check('manifest 的 exports 里有 "./client"', typeof manifest.exports?.["./client"] === "string");
+const clientEntry = join(pkgDir, "lib", "client.js");
 check(
-  "client 产物形态正确（__ModuleLoader__ 包装 + 导出 apply/inject）",
-  (() => {
-    const text = readFileSync(clientEntry, "utf8");
-    // cjs 形态是 `__export(index_exports, { apply: () => apply })` + `module.exports = __toCommonJS(...)`，
-    // 运行期等价于 exports.apply——所以这里按**导出名**断言，不按字面写法。
-    return (
-      text.includes("__ModuleLoader__.load(") &&
-      text.includes("module.exports = __toCommonJS(") &&
-      /apply:\s*\(\)\s*=>/.test(text) &&
-      /inject:\s*\(\)\s*=>/.test(text)
-    );
-  })(),
+  "产物里有 lib/client.js 且非空",
+  existsSync(clientEntry) && readFileSync(clientEntry).length > 0,
+  existsSync(clientEntry) ? `${String(readFileSync(clientEntry).length)} 字节` : "缺它 = 装上去整个前端打不开",
 );
+const hostEntry = join(pkgDir, manifest.exports["."]);
+check("manifest 里宿主产物存在且非空", existsSync(hostEntry) && readFileSync(hostEntry).length > 0, manifest.exports["."]);
 
 // ── 3. 加载**解出来的副本**，验证技能真能注册 ───────────────────────
 // 先把它声明的运行时依赖就位（真实安装时由 npm 装进 node_modules）：

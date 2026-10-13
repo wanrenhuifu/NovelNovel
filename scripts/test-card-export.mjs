@@ -3,14 +3,16 @@
 //
 // 与 test-card-import.mjs 一样：cardImport/export 是 TS 且用无扩展相对导入，
 // 先经 esbuild 打包再测真代码。
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import esbuild from "esbuild";
 
 const outFile = join(mkdtempSync(join(tmpdir(), "nn-card-export-")), "bundle.mjs");
-await esbuild.build({
+// `write: false` + 手工落盘：esbuild 的**子进程**在受限环境下写不了工作区外的临时目录
+// （报 "Access is denied"，而同一个路径 node:fs 写得进去），产物文本拿回来自己写最稳。
+const bundle = await esbuild.build({
   stdin: {
     contents:
       'export { buildCharacterPng, safeName } from "./src/domain/export";\n' +
@@ -21,8 +23,9 @@ await esbuild.build({
   bundle: true,
   format: "esm",
   platform: "node",
-  outfile: outFile,
+  write: false,
 });
+writeFileSync(outFile, bundle.outputFiles[0].text);
 const { buildCharacterPng, parseCharacterBytes } = await import(pathToFileURL(outFile).href);
 
 let failed = 0;

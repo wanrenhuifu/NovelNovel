@@ -1,24 +1,12 @@
 // 章节全文搜索测试：searchChapters 纯逻辑
 // 源码用无扩展相对导入（Vite 风格），Node 直跑 TS 不认，先经 esbuild 打包到临时文件再测真代码
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import { bundleSource } from "./bundle-source.mjs";
 
-const outFile = join(mkdtempSync(join(tmpdir(), "nn-search-")), "bundle.mjs");
-await esbuild.build({
-  stdin: {
-    contents: 'export { searchChapters } from "./src/domain/search";',
-    resolveDir: process.cwd(),
-    loader: "ts",
-  },
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  outfile: outFile,
-});
-const { searchChapters } = await import(pathToFileURL(outFile).href);
+const { module } = await bundleSource(
+  "search",
+  'export { searchChapters } from "./src/domain/search";',
+);
+const { searchChapters } = module;
 
 let failed = 0;
 function check(label, ok, extra = "") {

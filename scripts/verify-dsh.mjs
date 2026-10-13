@@ -11,6 +11,6 @@ import { runInDshNode } from "./dsh-node-launcher.mjs";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 // 插件装在哪个 profile 是仓库的测试前置，不是会话状态：会话里常带的 DSH_PROFILE=desktop
 // 会让这里切到桌面端 profile，所以只认专用变量。
-const profileName = process.env.DSH_TEST_PROFILE ?? "novelnovel";
+const profileName = process.env.DSH_TEST_PROFILE ?? "nn";
 
 process.exit(runInDshNode(join(repoRoot, "tests", "verify.mjs"), profileName));

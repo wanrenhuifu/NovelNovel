@@ -9,7 +9,7 @@
  *     验证两个 slot 都注册了、sidebar 的 id 与 main 的 key 一致、组件能渲染。
  *
  * 这里**测不到**、必须在真实浏览器里看的：外观、交互、fetch 是否被 connection 的 fence 放行。
- * 清单层面的判定（`dsh.client` 声明、`exports["./client"]`、产物路径）见 test-client-manifest.mjs。
+ * 清单层面的判定（`dsh.client` 声明、`exports["./client"]`、产物路径）见 test-manifest.mjs。
  */
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -68,7 +68,15 @@ const documentStub = {
 };
 
 const missing = [];
+/** 最小的 React.Component：面板的错误边界 `class PanelBoundary extends Component` 需要它 */
+class ComponentStub {
+  constructor(props) {
+    this.props = props;
+    this.state = {};
+  }
+}
 const reactStub = {
+  Component: ComponentStub,
   createElement: (type, props, ...children) => ({ type, props, children }),
   useState: (initial) => [typeof initial === "function" ? initial() : initial, () => undefined],
   useEffect: () => undefined,
@@ -89,12 +97,17 @@ function seed(spec) {
   if (spec === "react") return reactStub;
   if (spec === "react/jsx-runtime") return jsxStub;
   if (spec === "@deepseek-ai/dsh-client-ui-primitives") {
+    // 名单与 `src/client/env.d.ts` 的手写声明一致：「名字真实存在」由
+    // tests/verify-client-primitives.mjs 对着安装里的产物校验，这里只管物化得起来。
     return {
       Button: iconStub,
       Tag: iconStub,
       StateDot: iconStub,
-      IconFileRegular: iconStub,
-      IconFolderRegular: iconStub,
+      DisclosureRow: iconStub,
+      MarkdownText: iconStub,
+      IconListPenOutlineRegular: iconStub,
+      IconFolderOpenRegular: iconStub,
+      IconDeliverDocRegular: iconStub,
     };
   }
   return {};

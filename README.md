@@ -1,10 +1,9 @@
-# 这个插件坏掉了，我的电脑也坏掉了没法修，暂时别用
 # dsh-novelnovel · DeepSeek Harness 插件
 
 用工作区里的**普通文件**写小说：agent 直接用 `novel_*` 工具建作品、写正文、导角色卡、维护世界观词条、
 检索与导出，**续写由 harness 的模型承担**，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 /
 写作预设 / 前文摘录）组装成写作简报交给它；方法层面的东西（文风、对话、节奏、结构）由自带的技能承载，
-也可以导入你自己的。
+也可以导入你自己的。另外带一个**侧栏只读面板**，把作品 / 章节 / 正文按读一本书的样子显示出来。
 
 本仓库就是插件包（`dsh.bundle.patch` → `cordis.patch.yml`，向 profile 插入一行 `id: novelnovel`）。
 领域逻辑（角色卡解析、预设解析、技能包解析、提示词组装、词条关键词匹配、章节排序、全文搜索、
@@ -13,13 +12,34 @@ PNG 卡读写、字数统计）集中在 `src/domain/`，与 harness 侧的存�
 ## 安装
 
 前置：`dsh` CLI 与 `pnpm` 都在 PATH 上——`dsh plugin` 是把参数转发给 profile 目录里的 pnpm。
+**桌面端安装里两者都不在 PATH 上**，用应用自带的 wrapper：`<安装目录>\resources\runtime\cli\bin\dsh.cmd`
+（它内部已经把 pnpm 指向 `resources/runtime/pnpm/bin/pnpm.mjs`）。下面统一写成 `$DSH`。
+
+### 推荐：先建一个专用 profile（`nn`），别装进日常界面
+
+客户端半边是 **fail-closed** 的：一个包声明了 `dsh.client` 而产物读不到，宿主启动时会**同步抛错**，
+结果是**所有**客户端插件（含首方 UI）一起加载不出来。开发迭代期把面板装进日常用的 profile，
+一次构建失误就能让你连界面都打不开。所以：
+
+```powershell
+$DSH = "<安装目录>\resources\runtime\cli\bin\dsh.cmd"
+& $DSH --profile nn --from-default-profile web --dump-config   # 建 profile，只打印组合树、不起服务
+& $DSH plugin --profile nn add D:\NovelNovel                   # 装插件（只装进 nn）
+& $DSH --profile nn                                            # 起界面，终端打印带 token 的 URL
+```
+
+**`--from-default-profile web` 这一步不能省。** 自带模板只认 `web` / `headless` / `acp` / `sdk` /
+`sdk-minimal` 这五个**名字**，别的名字不会被自动初始化；而 `dsh plugin --profile nn add` 对没有模板的
+名字只给 `@deepseek-ai/dsh-base`——**base 只是内核，没有 Host、没有 HTTP、没有 runner**，装上也看不到界面。
+`--from-default-profile web` 让新名字从 `web` 模板的**组合包列表**起步（只复制包清单，
+不复制那个 profile 的任何本地状态）。加 `--dump-config` 是为了「只创建、不起服务」。
 
 ### 装来用（tarball，不依赖工作树）
 
 ```bash
 git clone https://github.com/wanrenhuifu/NovelNovel.git && cd NovelNovel
 npm install
-npm pack                                  # prepack 会自动构建出 lib/
+npm pack                                  # prepack 会自动构建出 lib/（宿主 + 客户端两个产物）
 dsh plugin --profile web add ./dsh-novelnovel-0.1.0.tgz
 dsh web
 ```
@@ -33,6 +53,8 @@ dsh plugin --profile web add .            # 装成 link，指向这个工作树
 ```
 
 改完 `src/` 之后要 `npm run build` 再**重开 dsh 会话**——profile 加载的是构建产物，不是源码。
+`link:` 装法下重建产物即生效，所以**装了插件的 profile 会被工作树直接影响**：
+这也正是"开发迭代别装日常 profile"的另一半理由。
 
 ### 装进 DSH 桌面端
 
@@ -42,26 +64,27 @@ dsh plugin --profile web add .            # 装成 link，指向这个工作树
 
 ```powershell
 # 1) 完全退出 DeepSeek Harness Desktop（它持有 profile 的 package.json 锁）
-# 2) 用桌面端自带的 CLI 装（路径按你的安装位置改；默认装在 D:\DSH）
-& "D:\DSH\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add D:\novelnovel
-# 3) 确认插件层进来了
-& "D:\DSH\resources\runtime\cli\bin\dsh.cmd" --profile desktop --dump-config | Select-String novelnovel
+# 2) 用桌面端自带的 CLI 装（路径按你的安装位置改）
+& $DSH plugin --profile desktop add D:\NovelNovel
+# 3) 确认这条依赖进了清单，并且**同时**进了 dsh.profile.bundles
+[System.IO.File]::ReadAllText("$env:USERPROFILE\.dsh\profiles\desktop\package.json")
 # 4) 重开桌面端 —— 这一步不能省，理由见下
 ```
 
-**第 4 步为什么不能省**：客户端插件（侧栏面板）的注册表只在**应用启动/插件层变动**时构建一次，
-之后是增量扫描，没有全量重扫路径。所以"装完插件不重开应用"的表现是：**宿主半边（`novel_*` 工具）
-正常工作、侧栏里却没有面板、浏览器 console 也没有报错**——很难归因。实测踩过一次：
-应用启动于 16:49、插件 17:12 装进 profile，于是注册表里根本没有这个包，直到重开才出现。
-（改 `src/` 后也一样：`npm run build` 之后要重开会话；只有产物内容变化才走 HMR。）
+> 读 profile 的 `package.json` 请走 .NET（`[System.IO.File]::ReadAllText`）：
+> Windows PowerShell 5.1 的 `Get-Content` 会按 ANSI 解码无 BOM 的 UTF-8，中文变乱码。
 
-> **面板没出现怎么办**：先确认已经**完全退出并重开**过桌面端。若仍没有，打开 DevTools（F12）
-> 看 console 有没有 `ClientPackageCompositionError` / `MissingClientBundleError` /
-> `missed the module table` / `slot entry crashed` 之一，按那个关键词报 issue。
-> 宿主半边是否正常可以这样快速判断：随便让模型调一次 `novel_project action=list`。
+**第 4 步为什么不能省**：插件只在**启动时**装载，装进 profile 之后不重开就不会生效。
+
+> **加载只看 `dsh.profile.bundles`**：清单里 `dependencies` 有、`dsh.profile.bundles` 里没有 = **不加载**
+> （app-boot 的 `loadProfileDirectory` 逐个解析这个列表）。用手动改清单装插件时最容易漏这一项。
+> 反过来，在侧栏「插件」页**主动取消选择**某个组合包，产出的就是这个状态——那时是有意的，不是故障。
+>
+> 装完怎么确认生效：让模型调一次 `novel_project action=list` 或 `/novel`。命令返回当前作品状态，
+> 不经过模型，是最快的判据。
 
 `desktop` profile 是 `patchReload: live`，但改 `src/` 后仍然要 `npm run build` + 重开会话
-（profile 加载的是 `lib/` 产物）。
+（profile 加载的是 `lib/` 产物，不是源码）。
 
 ⚠️ **桌面端的工作区根 = 那次会话选定的目录**。打开桌面端后在**你的小说目录**里开会话，
 数据才会落在那里（`.novelnovel/`）；在别的目录开会话，`novel_project action=list` 会是空的。
@@ -78,20 +101,36 @@ dsh plugin --profile web add .            # 装成 link，指向这个工作树
 | `web` | 浏览器界面，交互式写作 |
 | `headless` | 一次性任务：`dsh --profile headless "给《长夜将至》写第三章"` |
 | `desktop` | DSH 桌面端（应用独占，只能按上面那节的方式装插件） |
+| `nn` / 任何自定名 | **开发迭代用**：从 `web` 模板起步，与日常界面隔离 |
 
 ⚠️ 只有 `web` / `headless` / `sdk` / `sdk-minimal` / `acp` 这五个名字会从自带模板自动初始化。
 **自己起别的名字只会得到 `dsh-base` 一个 bundle，而 base 只是内核**——没有 Host、没有 HTTP、
-没有一次性 runner，装上也用不了。`desktop` 不在其中：它由桌面端应用初始化，`dsh` 启动器会拒绝
+没有一次性 runner，装上也用不了。自定名要走 `--from-default-profile web`（见上面的推荐一节）。
+`desktop` 不在其中：它由桌面端应用初始化，`dsh` 启动器会拒绝
 `dsh --profile desktop`（但允许 `dsh plugin --profile desktop`，见上一节）。
 
 ### 验证装上了
 
 ```bash
-# 浏览器端 / 一次性任务
-dsh --profile web --dump-config | grep -i novelnovel          # 应能看到 # == dsh-novelnovel 那一层
+# 浏览器端 / 一次性任务 / 自定 profile
+$DSH --profile nn --dump-config | Select-String novelnovel    # 应能看到 # == dsh-novelnovel 那一层
 # 桌面端（要用自带 CLI）
-& "D:\DSH\resources\runtime\cli\bin\dsh.cmd" --profile desktop --dump-config | Select-String novelnovel
+& $DSH --profile desktop --dump-config | Select-String novelnovel
 ```
+
+装完**必须重开**才算生效：客户端插件的注册表只在**应用启动/插件层变动**时构建一次，
+之后是增量扫描。所以"装完不重开"的表现是：**宿主半边（`novel_*` 工具）正常工作、
+侧栏里却没有面板、浏览器 console 也没有报错**——很难归因（实测踩过一次：
+应用启动于 16:49、插件 17:12 装进 profile，注册表里根本没有这个包，直到重开才出现）。
+
+> **面板没出现怎么办**：先确认已经**完全退出并重开**过。若仍没有，打开 DevTools（F12）
+> 看 console 有没有 `ClientPackageCompositionError` / `MissingClientBundleError` /
+> `missed the module table` / `slot entry crashed` 之一，按那个关键词排查。
+> 宿主半边是否正常可以这样快速判断：随便让模型调一次 `novel_project action=list`。
+
+> **面板显示"尚未确定工作目录"**：这是设计如此，不是故障。HTTP 路由**没有会话上下文**，
+> 工作目录只能由面板告知，而面板只认「本进程里真会话用过的工作目录」（否则等于把任意目录读取
+> 开放出去）。所以先在本会话里让模型调用一次任意 `novel_*` 工具（或用 `/novel`），再点面板的刷新。
 
 ### 不支持从 git 直接安装
 
@@ -139,7 +178,6 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 ## 用法
 
 在装了插件的 profile 里开一个会话，直接用自然语言提写作需求即可；系统提示词会引导 agent 使用这些工具：
-
 | 工具 | 作用 |
 |---|---|
 | `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求）/ 切换当前作品 / 删除 |
@@ -164,6 +202,26 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 
 技能是**按需加载**的：模型平时只看得到每个技能的名字和一句描述，判断相关了才把正文拉进上下文。
 所以这些方法平时不占上下文，也不会和你的写作预设打架——需要的时候它们才出现。
+
+## 侧栏面板（只读）
+
+Web 界面（`web` / `desktop` / 任何带 Web 面的 profile）的侧栏会多一个 NovelNovel 图标，
+点开是当前作品的**章节列表 + 正文**，按读一本书的样子排版：行宽行距按中文小说调过，
+章节行带体量条（按最长章节归一化，不写死"多少字算长"），正文区显示参与写作的角色与命中的词条数。
+
+**只读是有意的**：写操作要与模型抢同一份稿子，得先设计冲突 UX 并复用 CAS 语义。
+第一期先把"看得见"这件事做对。
+
+数据来自插件自己的 3 条只读路由（`/api/novel.projects` / `novel.project` / `novel.chapter`），
+读的是工作区里**同一份** `.novelnovel/` 文件——面板上看到的就是模型正在写的那份。
+
+两条容易误判成故障的行为：
+
+- **首次打开显示"尚未确定工作目录"**：HTTP 路由没有会话上下文，工作目录只能由面板告知，
+  而面板只认「本进程里真会话用过的工作目录」。先让模型调一次任意 `novel_*` 工具，再点刷新。
+  （这条白名单不是多余的小心：没有它，任何拿到会话 cookie 的页面都能指定任意目录去读。）
+- **读不出来的东西一律点名**：作品目录坏了、某章正文文件不在磁盘上，面板会**明说**（而不是显示成空），
+  否则用户会以为"没有作品"而去新建，真正的问题是他手改坏了一个文件。
 
 ## 装你自己的写作方法
 
@@ -270,6 +328,24 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 
 ## 设计说明
 
+- **客户端半边是 fail-closed 的，所以按"会炸整台前端"来对待**：宿主 `ClientModuleRegistry`
+  构造时会为每个声明了 `dsh.client` 的 loader 行读 `exports["./client"]` 指向的文件，
+  **读不到就同步抛出**（`MissingClientBundleError` 聚合成 `ClientPackageCompositionError`）：
+  注册表不注册 → `/plugins` 路由与 `window.__DSH_BOOT__` 注入都不发生 →
+  **所有**客户端插件（含首方 UI）一起加载不出来。现场看起来像"插件之间冲突"，实际是启动即崩。
+  因此：① `npm run build` 两个产物必须**同时**成功；② `scripts/test-manifest.mjs` 在装机前把
+  两个抛点变成红灯；③ 开发迭代装在专用 profile（`nn`）里，不装日常界面。
+- **面板的宿主接口用 `ctx.inject(["connection"], …)` 软挂载，不在 apply 里直接 `ctx.get`**：
+  插件行在 loader 里比 Web 那几行早，直接查是**只查一次、拿不到就没了**，
+  结果是三条路由永远不注册（面板每次取数 404），而宿主工具一切正常——
+  现场看起来像"面板坏了、插件是好的"。同一条形状的坑在 skills / commands / systemPrompt 上
+  各踩过一次。
+- **`/api/novel.*` 的 `cwd` 白名单**：HTTP 请求**没有会话上下文**，工作目录只能由前端告知，
+  而"前端说什么就信什么"等于把任意目录读取开放给任何拿到会话 cookie 的页面。
+  所以只认**本进程里真会话用过的工作目录**（`NovelStore.workspaceOf`），并且复用**当初那个真
+  Session 对象**而不是 `{header:{cwd}}` 的伪造体——`sandboxPolicy.resolve` 要读会话的
+  projection，伪造对象会直接 `TypeError` 让三条路由全 500。没跑过任何 `novel_*` 工具时返回 403
+  并说明"先跑一次"，而不是猜一个目录去读。
 - **写入路径**：文本读写一律走 `ctx.fs`（受 harness 沙箱与权限策略约束、与 `write`/`edit`
   共用版本语义，并 `emit('fs/observed')` 让变更流与「先读后写」策略保持一致）。
   写入用**读取时拿到的版本**做 CAS 基准，所以「先读后改」的窗口里被别处改过时会失败并提示重新读取，
@@ -322,29 +398,36 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 ## 开发
 
 ```bash
-npm run build       # esbuild 打包到 lib/
+npm run build       # esbuild 打包两个半边：lib/index.js（宿主）+ lib/client.js（浏览器经典脚本）
 npm run typecheck   # tsc -p .（严格模式，零错误）
-npm test            # 9 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配 / 客户端清单 / 客户端产物）
+npm test            # 8 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配）+ 5 个客户端单测
 npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
-npm run test:dsh    # 端到端验证 54 项（默认 profile: novelnovel，用 DSH_TEST_PROFILE 覆盖）
+npm run test:dsh    # 端到端验证 54 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
 npm run test:race   # 并发交错：CAS 真的挡住了吗（单次调用测不出静默覆盖）
 npm run test:edge   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 半成品状态的点名
-npm run test:compose    # 用宿主真实注册表验证客户端半边能组合
 npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
 npm run test:chapter-guard  # 章节 id 不能当路径段（越界 id 读不到别的作品）
 npm run test:contract   # 文档契约：README 工具表承诺的 action 必须真实存在
-npm run test:package    # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册
-npm run test:render     # 面板渲染：react-dom/server 真渲染整棵面板（组件库走 shim）
-npm run test:interaction # 面板交互：jsdom 真挂载，点击与键盘事件都真派发
-npm run test:routes     # Web 路由：真 Request/Response 驱动三条 /api/novel.*，断言状态码与 JSON
+npm run test:package    # 分发冒烟：npm pack → 解包 → 加载 → 技能与工具都注册（两个半边都要在）
 npm run test:paging     # 章节列表分页：数 ctx.fs 调用与 summary 长度，证明分页真的省了
 npm run test:words      # 字数缓存：直接改文件后字数仍会重算 + 缓存真的省调用
 npm run test:lifecycle  # 生命周期：重复挂载会抛错、卸载后干净、能重新挂载（HMR 路径）
 npm run test:prompt     # 系统提示词段：文本内容 + 组装位置 + 卸载后不留残留
 npm run test:skills     # 自带技能：中文触发词必须在 description 里（whenToUse 不进提示词）
-npm run test:bundle-runs # 执行交付产物本身：跑 lib/client.js 的 factory 并调 apply，断言注册了两个插槽
-npm run test:hygiene    # 测试不许污染用户 profile + 每个装了插件的 profile 都验一遍
+npm run test:hygiene    # 测试不许污染用户 profile + 每个装了插件的 profile 都验一遍（含客户端产物）
 npm run test:perf   # 性能探针：每个工具调用的耗时与 ctx.fs 调用次数
+```
+
+客户端半边另有一组（都与宿主套件分开，因为它们要读**安装里的真实产物**，需要 DSH 自带的 Electron Node）：
+
+```bash
+npm run test:compose     # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
+npm run test:bundle-runs # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
+npm run test:primitives  # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
+npm run test:tokens      # 面板用的 CSS 变量必须在首方产物里存在
+npm run test:routes      # Web 路由：真实请求打过来，状态码与错误分级
+npm run test:render      # 用 jsdom 真渲染整棵面板（不复制面板代码）
+npm run test:interaction # 真 DOM 挂载 + 真实点击/键盘事件
 ```
 
 `test:dsh` / `test:perf` 会用 **DSH 自带的 Electron Node** 启动测试（harness 包在 `app.asar` 里，

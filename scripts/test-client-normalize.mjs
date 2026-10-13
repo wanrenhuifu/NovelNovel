@@ -5,22 +5,25 @@
 // 坏形状逐个钉住。
 import { build } from "esbuild";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const outfile = join(tmpdir(), `nn-normalize-${String(process.pid)}.mjs`);
 
-await build({
+// `write: false` + 手工落盘：esbuild 的**子进程**在受限环境下写不了工作区外的临时目录
+// （报 "Access is denied"，而同一个路径 node:fs 写得进去），产物文本拿回来自己写最稳。
+const built = await build({
   entryPoints: [join(repo, "src", "client", "normalize.ts")],
-  outfile,
   bundle: true,
   format: "esm",
   platform: "node",
   target: "node20",
+  write: false,
   logLevel: "error",
 });
+writeFileSync(outfile, built.outputFiles[0].text);
 
 const { normalizeChapters, normalizeLorebook, normalizeDetail } = await import(pathToFileURL(outfile).href);
 rmSync(outfile, { force: true });

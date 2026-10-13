@@ -1,7 +1,7 @@
 // 验证角色卡解析链路：构造内嵌角色卡数据的 PNG + JSON，跑 char-card-reader 解析
 // cardImport.ts 有无扩展相对导入（Vite 风格），Node 直跑不认，先经 esbuild 打包再测真代码
 import { deflateSync } from "node:zlib";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,7 +9,9 @@ import { CharacterCard } from "@lenml/char-card-reader";
 import esbuild from "esbuild";
 
 const outFile = join(mkdtempSync(join(tmpdir(), "nn-card-")), "bundle.mjs");
-await esbuild.build({
+// `write: false` + 手工落盘：esbuild 的**子进程**在受限环境下写不了工作区外的临时目录
+// （报 "Access is denied"，而同一个路径 node:fs 写得进去），产物文本拿回来自己写最稳。
+const bundle = await esbuild.build({
   stdin: {
     contents:
       'export { extractLorebookEntries, parseCharacterBytes } from "./src/domain/cardImport";',
@@ -19,8 +21,9 @@ await esbuild.build({
   bundle: true,
   format: "esm",
   platform: "node",
-  outfile: outFile,
+  write: false,
 });
+writeFileSync(outFile, bundle.outputFiles[0].text);
 const { extractLorebookEntries, parseCharacterBytes } = await import(
   pathToFileURL(outFile).href
 );

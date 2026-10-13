@@ -83,14 +83,36 @@ function fromError(ctx: Context, error: unknown): Response {
   );
 }
 
+/**
+ * 注册 Web 面板的只读接口。
+ *
+ * **必须走 `ctx.inject(["connection"], …)`，不能在 apply 里直接 `ctx.get("connection")`。**
+ * 前者是 Cordis 的软挂载：服务还不存在时把回调排队，等它 provide 之后再执行；
+ * 后者只是**查一次**，拿不到就没了、而且不会重试。插件行在 loader 里比 Web 那几行早，
+ * 所以直接查的结果是稳定拿到 `undefined` → 三条路由永远不注册 → 面板每次取数都 404，
+ * 而宿主工具一切正常（`novel_*` 能用），现场看起来像"面板坏了、插件是好的"。
+ * 同一条形状的坑在 skills / commands / systemPrompt 上已经各踩过一次，这里统一。
+ *
+ * 没有 connection 的组合（headless / sdk）不会触发回调，接口自然不注册——那是对的，
+ * 那些组合没有 Web 面。
+ */
 export function registerClientApi(ctx: Context, store: NovelStore): void {
-  const connection = ctx.get<ConnectionService>("connection");
-  if (connection === undefined) {
-    // headless / sdk 组合没有 Web 面，注册接口没有意义
-    ctx.logger.debug("novelnovel: no connection service — Web 面板接口未注册");
-    return;
-  }
+  ctx.inject(["connection"], (connCtx) => {
+    const connection = connCtx.get<ConnectionService>("connection");
+    if (connection === undefined) {
+      // inject 已保证服务在，这里只是让类型收窄；真出现说明 harness 语义变了
+      connCtx.logger.warn("novelnovel: connection injected but unavailable — Web 面板接口未注册");
+      return;
+    }
+    registerRoutes(connCtx, connection, store);
+  });
+}
 
+function registerRoutes(
+  ctx: Context,
+  connection: ConnectionService,
+  store: NovelStore,
+): void {
   /** 解析并校验工作目录；不合法时返回可直接回给前端的 Response */
   const resolveSession = (request: Request): FsSession | Response => {
     const cwd = new URL(request.url).searchParams.get("cwd");

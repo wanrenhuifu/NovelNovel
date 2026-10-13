@@ -11,7 +11,13 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** 找 DSH 安装目录：$DSH_INSTALL → 从 $DSH_ENTRY 反推 → 常见位置 */
+/**
+ * 找 DSH 安装目录：$DSH_INSTALL → 从 $DSH_ENTRY 反推 → 常见位置。
+ *
+ * 常见位置按「安装器实际会用的目录」列：本机的 Electron 用户级安装落在
+ * `%LOCALAPPDATA%\Programs\<产品名>`，早先只列了 `D:\DSH` 与 `C:\Program Files\...`，
+ * 于是自动探测在这台机器上必然落空、每次都要手动设 DSH_INSTALL。
+ */
 export function findInstall() {
   const candidates = [];
   if (process.env.DSH_INSTALL) candidates.push(process.env.DSH_INSTALL);
@@ -19,6 +25,12 @@ export function findInstall() {
   if (process.env.DSH_ENTRY) {
     const at = process.env.DSH_ENTRY.indexOf(marker);
     if (at > 0) candidates.push(process.env.DSH_ENTRY.slice(0, at));
+  }
+  const localPrograms = process.env.LOCALAPPDATA === undefined
+    ? undefined
+    : join(process.env.LOCALAPPDATA, "Programs");
+  for (const name of ["DeepSeek Harness", "DSH Desktop", "DSH", "dsh"]) {
+    if (localPrograms !== undefined) candidates.push(join(localPrograms, name));
   }
   candidates.push("D:\\DSH", join("C:\\", "Program Files", "DSH Desktop"));
   return candidates.find((dir) => existsSync(join(dir, "DeepSeek Harness.exe")));

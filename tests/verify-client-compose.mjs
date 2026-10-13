@@ -42,9 +42,17 @@ console.log(`harness: ${harnessRoot()}`);
 const { Context } = await load("@deepseek-ai/cordis");
 const ClientModules = (await load("@deepseek-ai/dsh-client-modules")).default;
 
-// 真实运行时的解析基准：active profile 目录（`link:` 安装的插件在那里可见）
+// 真实运行时的解析基准：active profile 目录（`link:` 安装的插件在那里可见）。
+// 只认启动器注入的 DSH_PROFILE——它由 scripts/verify-client-compose.mjs 从
+// DSH_TEST_PROFILE 传进来。**不要退回 DSH_TEST_PROFILE 的字面默认值**：会话里的
+// DSH_TEST_PROFILE 可能没被继承，而默认值一旦与真实 profile 名漂移，这条测试会
+// 静默地对着一个不存在的目录跑（本文件曾经因此整条空转）。
 const dshHome = process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? "", ".dsh");
-const profile = process.env.DSH_TEST_PROFILE ?? "novelnovel";
+const profile = process.env.DSH_PROFILE;
+if (profile === undefined || profile === "") {
+  console.error("需要 DSH_PROFILE：请通过 scripts/verify-client-compose.mjs 启动（它会注入）。");
+  process.exit(1);
+}
 const baseUrl = join(dshHome, "profiles", profile, "anchor.mjs");
 
 try {

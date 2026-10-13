@@ -4,6 +4,13 @@
  * 一行配置同时挂起：作品/章节/角色卡/世界书/预设的文件存储、8 个 novel_* 工具、
  * 6 个技能、/novel 斜杠命令与一小段系统提示词。
  * 全部通过 ctx 注册，插件卸载时由 Cordis 自动撤销。
+ *
+ * **两个半边**：本文件是宿主半边；浏览器半边在 `src/client/`，走 `exports["./client"]`
+ * （见 build.client.mjs）。另外注册 3 条只读 `/api/novel.*` 路由供面板取数。
+ *
+ * 客户端半边是 **fail-closed** 的：`lib/client.js` 读不到就会让**所有**客户端插件
+ * （含首方 UI）一起加载不出来。所以 `dsh.client` 与产物必须同时成立——
+ * 装之前先跑 `scripts/test-manifest.mjs`，它把宿主那两个抛点变成红灯。
  */
 import type { Context, DefineTool } from "./contract";
 import { registerClientApi } from "./clientApi";

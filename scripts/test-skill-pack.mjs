@@ -1,27 +1,12 @@
 // 技能包与 SKILL.md frontmatter 纯逻辑测试
 // 源码用无扩展相对导入（Vite 风格），Node 直跑 TS 不认，先经 esbuild 打包到临时文件再测真代码
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import { rmSync } from "node:fs";
+import { bundleSource } from "./bundle-source.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "nn-skillpack-"));
-const outFile = join(dir, "bundle.mjs");
-await esbuild.build({
-  stdin: {
-    contents: [
-      'export { parseSkillPack, buildSkillPack, renderPackedSkill, ancestorDirs } from "./src/domain/skillPack";',
-      'export { parseSkillFile, renderSkillFile, isValidSkillName } from "./src/domain/skillFrontmatter";',
-    ].join("\n"),
-    resolveDir: process.cwd(),
-    loader: "ts",
-  },
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  outfile: outFile,
-});
+const { module, dir } = await bundleSource("skillpack", [
+  'export { parseSkillPack, buildSkillPack, renderPackedSkill, ancestorDirs } from "./src/domain/skillPack";',
+  'export { parseSkillFile, renderSkillFile, isValidSkillName } from "./src/domain/skillFrontmatter";',
+].join("\n"));
 const {
   parseSkillPack,
   buildSkillPack,
@@ -30,7 +15,7 @@ const {
   parseSkillFile,
   renderSkillFile,
   isValidSkillName,
-} = await import(pathToFileURL(outFile).href);
+} = module;
 rmSync(dir, { recursive: true, force: true });
 
 let failed = 0;

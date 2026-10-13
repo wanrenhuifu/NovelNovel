@@ -1,25 +1,13 @@
 // 章节拖拽排序纯逻辑测试
 // 源码用无扩展相对导入（Vite 风格），Node 直跑 TS 不认，先经 esbuild 打包到临时文件再测真代码
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import { rmSync } from "node:fs";
+import { bundleSource } from "./bundle-source.mjs";
 
-const dir = mkdtempSync(join(tmpdir(), "nn-reorder-"));
-const outFile = join(dir, "bundle.mjs");
-await esbuild.build({
-  stdin: {
-    contents: 'export { computeReorder } from "./src/domain/reorder";',
-    resolveDir: process.cwd(),
-    loader: "ts",
-  },
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  outfile: outFile,
-});
-const { computeReorder } = await import(pathToFileURL(outFile).href);
+const { module, dir } = await bundleSource(
+  "reorder",
+  'export { computeReorder } from "./src/domain/reorder";',
+);
+const { computeReorder } = module;
 rmSync(dir, { recursive: true, force: true });
 
 const mk = (id, sortOrder, updatedAt = 0) => ({

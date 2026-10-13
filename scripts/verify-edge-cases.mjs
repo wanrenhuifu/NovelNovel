@@ -3,4 +3,4 @@ import { fileURLToPath } from "node:url";
 import { runInDshNode } from "./dsh-node-launcher.mjs";
 
 const script = fileURLToPath(new URL("../tests/verify-edge-cases.mjs", import.meta.url));
-process.exit(runInDshNode(script, process.env.DSH_TEST_PROFILE ?? "novelnovel"));
+process.exit(runInDshNode(script, process.env.DSH_TEST_PROFILE ?? "nn"));

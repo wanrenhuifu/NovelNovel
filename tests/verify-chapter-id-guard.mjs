@@ -4,8 +4,8 @@
  * 洞的形状（独立审查发现）：`chapterFile = <dataDir>/projects/<pid>/chapters/<id>.md`，
  * 而 `<id>` 直接来自 `chapters/index.json`。索引是**给人手改的普通文件**，
  * 把某条改成 `{"id":"../../other-novel/abc"}` 就能：
- *   - 通过 `/api/novel.chapter?chapter=../../other-novel/abc` 读到**另一个作品**的正文；
- *   - `../../../../Users/<u>/notes` 读到工作区外任意 `*.md`；
+ *   - 让 `readChapter` 读到**另一个作品**的正文（`../other-novel/x` 仍在工作区内）；
+ *   - 让 `../../../../Users/<u>/notes` 读到工作区外任意 `*.md`；
  *   - 同一个 id 还流进 `deleteChapter`——`assertInsideWorkspace` 只挡工作区**外**，
  *     `../other-novel/x` 在工作区内，会真的删掉别的作品。
  *
