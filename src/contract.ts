@@ -249,6 +249,65 @@ export interface ToolRegistry {
   register(definition: ToolDefinition): () => void;
 }
 
+/**
+ * `ctx.subagents` 的最小契约（@deepseek-ai/dsh-subagent 0.2.0-rc.2）。
+ *
+ * 只抄本插件真的用到的那一支：**一次性前台委派**。
+ * - `start(providerName, request)` → `{ id, result, dispose }`；`result` **从不 reject**，
+ *   失败信息在 `{ stopReason, diagnostic }` 里（`${pkg}/lib/types/index.js:389`）。
+ * - `request.parent` 必须是**活的 Agent 实例**（工具里的 `exec.agent`）。插件是宿主侧代码、
+ *   不是 Agent，"谁是父"只能由调用方给。
+ * - `outputSchema` 是**标准 JSON Schema**（object 根；`required` 是字符串数组），
+ *   provider 会给子 agent 挂一个 `structured_output` 工具，结果从 `result.structured` 取
+ *   （`dsh-subagent-in-process-driver/lib/index.js:36-108、231-252`）。
+ * - `toolFilter` 走 `childCtx.tools.restrict()`：`allow` = 只留这些全局工具，
+ *   `deny` = 去掉这些。**点名不存在的工具会直接抛错**，所以这里用 `allow: []`
+ *   （不点名任何工具，天然跨组合安全），子 agent 自己的 `structured_output` 是
+ *   **scope-local 注册**，不受全局 mask 影响。
+ * 不在本契约里的是「持久后台 agent」——那东西不存在（见 docs/design/auto-writer.md 的进度说明）。
+ */
+export interface SubagentRunResult {
+  readonly output?: readonly ContentBlock[];
+  /** provider 支持且子 agent 调用了 `structured_output` 时才有 */
+  readonly structured?: unknown;
+  readonly stopReason?: string;
+  readonly diagnostic?: string;
+}
+
+export interface SubagentRun {
+  readonly id: string;
+  /** 注意：**从不 reject**，判失败要看 stopReason / structured 是否存在 */
+  readonly result: Promise<SubagentRunResult>;
+  dispose(): Promise<void>;
+}
+
+export interface SubagentAgentOptions {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
+  readonly maxTokens?: number;
+}
+
+export interface SubagentStartRequest {
+  readonly label?: string;
+  readonly prompt: readonly ContentBlock[];
+  readonly parent: Agent;
+  readonly signal?: AbortSignal;
+  readonly agentOptions?: SubagentAgentOptions;
+  /** 子 agent 的 persona：注册成它自己作用域里的 `deployment:persona-prefix` 段 */
+  readonly persona?: string;
+  readonly toolFilter?: { readonly allow?: readonly string[]; readonly deny?: readonly string[] };
+  readonly maxDepth?: number;
+  readonly outputSchema?: Record<string, unknown>;
+}
+
+export interface SubagentsService {
+  /** provider 名（dsh-base 组合里是 `spawn` 与 `fork`）；不存在时抛错 */
+  start(provider: string, request: SubagentStartRequest): Promise<SubagentRun>;
+  /** 已注册的 provider 名 */
+  list(): readonly string[];
+}
+
 /** 技能资源根：本插件只产出 `directory` 形态，其余是契约对照 */
 export type SkillResourceBase =
   | { readonly kind: "directory"; readonly path: string }
@@ -315,6 +374,11 @@ export interface Context {
   readonly skills: SkillRegistryLike;
   readonly commands: CommandsService;
   readonly systemPrompt: SystemPromptService;
+  /**
+   * 软挂载（`ctx.inject(['subagents'], …)`）：不是每个组合都有它
+   * （headless/sdk 这类只有内核的 profile 就没挂）。缺了要**明说**，不能静默降级成"检查通过"。
+   */
+  readonly subagents: SubagentsService;
   readonly logger: PluginLogger;
   get<T = unknown>(name: string): T | undefined;
   inject(deps: string[], callback: (ctx: Context) => void): unknown;

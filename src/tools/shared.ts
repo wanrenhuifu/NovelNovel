@@ -1,8 +1,7 @@
 /** 工具共用的输出形状与文本渲染 */
-import type { ContentBlock, SchemaNode } from "../contract";
+import type { ContentBlock, Context, DefineTool, SchemaNode, SubagentsService } from "../contract";
 import type { NovelConfig, NovelStore } from "../store";
 import type { SkillStore } from "../skillStore";
-import type { Context, DefineTool } from "../contract";
 
 export interface ToolDeps {
   ctx: Context;
@@ -10,6 +9,12 @@ export interface ToolDeps {
   skillStore: SkillStore;
   config: NovelConfig;
   defineTool: DefineTool;
+  /**
+   * 软挂载的 `subagents` 服务（`ctx.inject(['subagents'], …)` 拿到后放进这个取值器）。
+   * **读的时候才查**，返回 undefined 表示这个组合里没有它——调用方必须把这件事说出来，
+   * 不能当成"检查通过"（见 tools/subagent.ts）。
+   */
+  subagents(): SubagentsService | undefined;
 }
 
 /**

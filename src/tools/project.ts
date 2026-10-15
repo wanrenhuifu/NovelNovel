@@ -175,11 +175,18 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
           const lorebook = await store.readLorebook(session, projectId);
           const presets = await store.readPresets(session, projectId);
           const activePreset = store.activePreset(presets);
+          // 自动写作循环靠这一行判断"还剩几章、下一章是谁"（一次 listDir，不读正文）
+          const progress = await store.chapterProgress(session, projectId);
+          const next = progress.pending[0];
           return {
             action: args.action,
             summary: lines(
               `《${project.title}》 (${project.id})`,
               `chapters: ${stats.chapterCount}, words: ${stats.words}`,
+              `progress: ${progress.written}/${progress.total} chapters have text` +
+                (next
+                  ? ` · next unwritten: ${next.title} [${next.id}]${next.goal?.trim() ? ` — goal: ${next.goal.trim()}` : ""}`
+                  : " · every chapter has text"),
               `characters: ${characters.length} (${characters.filter((c) => c.active).length} active)`,
               `lorebook: ${lorebook.length} entries (${lorebook.filter((e) => e.enabled).length} enabled)`,
               `preset: ${activePreset ? activePreset.name : "(built-in default)"}`,
@@ -198,6 +205,13 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
               active_preset: activePreset?.name ?? null,
               // 没有 outline 的老作品如实报 null，不编一个空串出来（与 novel_context 的 goal 同口径）
               outline: project.outline?.trim() ? project.outline.trim() : null,
+              progress: {
+                total: progress.total,
+                written: progress.written,
+                next_chapter_id: next?.id ?? null,
+                next_chapter_title: next?.title ?? null,
+                next_chapter_goal: next?.goal?.trim() ? next.goal.trim() : null,
+              },
             },
           };
         }

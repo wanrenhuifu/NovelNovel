@@ -20,6 +20,7 @@ import {
   type Chapter,
   type ChapterIndex,
   type ChapterMeta,
+  type ChapterReview,
   type NovelProject,
   type PresetFile,
   type StoredCharacter,
@@ -36,6 +37,21 @@ export interface NovelConfig {
   maxPrevChapterCount: number;
   /** 单章最多摘多少字 */
   maxPrevChapterChars: number;
+  /** 自检的字数下限；0 = 不设下限（不误伤短篇/小品） */
+  minChapterChars: number;
+  /** 与前一章尾部连续重合多少字算「重复」 */
+  maxRepeatRunChars: number;
+  /** 自检是否检查正文里混进的标题/元话语 */
+  reviewFormatChecks: boolean;
+  /** 同一章连续判不合格几次就停下来交给作者；0 = 不设上限 */
+  maxReviewAttempts: number;
+  /** 命中词条的注入条数上限（常驻条目不占额度）；0 = 不限 */
+  maxInjectedLoreEntries: number;
+  /** 命中词条的注入字符预算；0 = 不限 */
+  maxInjectedLoreChars: number;
+  /** 自检子 agent 的模型路由覆盖（留空 = 继承当前会话的默认路由） */
+  reviewProvider?: string;
+  reviewModel?: string;
 }
 
 export interface ProjectSummary {
@@ -72,6 +88,17 @@ export interface ProjectListing {
   unreadable: UnreadableProject[];
   /** workspace.json 读不出来时的原因（不是致命错误，但会影响「当前作品」） */
   workspaceError?: string;
+}
+
+/**
+ * 写作进度（`chapterProgress`）。自动写作循环靠它判断"写完了没有、下一章是谁"，
+ * 所以只统计**有没有正文**，不含字数——字数是另一条按大小缓存的路径。
+ */
+export interface ChapterProgress {
+  total: number;
+  written: number;
+  /** 还没有正文的章节（按排序），第一个即"下一章" */
+  pending: ChapterMeta[];
 }
 
 export interface ImportedCharacterResult {
@@ -1103,6 +1130,20 @@ export class NovelStore {
     return metas.filter((meta) => !present.has(meta.id)).map((meta) => meta.id);
   }
 
+  /**
+   * 写作进度：共几章 / 已有几章正文 / 还没写的章节（按顺序，第一个就是"下一章"）。
+   *
+   * **一次 `listDir`，不读任何正文**：自动写作循环每轮都要问「还剩几章、下一章是谁」，
+   * 让它自己去 `action=list` 数（那会把每章正文与预览都拉进上下文）既贵又容易数错。
+   * 判据是「正文文件在不在、是不是空的」——这正是 `listDir` 给得起的。
+   */
+  async chapterProgress(session: FsSession, projectId: string): Promise<ChapterProgress> {
+    const metas = await this.listChapterMetas(session, projectId);
+    const sizes = await this.chapterBodySizes(session, projectId);
+    const pending = metas.filter((meta) => (sizes.get(meta.id) ?? 0) === 0);
+    return { total: metas.length, written: metas.length - pending.length, pending };
+  }
+
   /** 章节列表（带正文与字数）：正文以文件为准，agent 直接改文件也能反映出来 */
   async listChapters(session: FsSession, projectId: string): Promise<Chapter[]> {
     const metas = await this.listChapterMetas(session, projectId);
@@ -1451,6 +1492,8 @@ export class NovelStore {
       removeTags?: string[];
       goal?: string;
       summary?: string;
+      /** 自检结论（`novel_review` 写）；`null` = 清掉记录（重写一章后重新计数） */
+      review?: ChapterReview | null;
     },
   ): Promise<ChapterMeta> {
     return this.patchChapter(session, projectId, chapterId, (meta) => {
@@ -1472,6 +1515,9 @@ export class NovelStore {
       // 视为没有，所以清空后简报立刻退回旧形状，而不是留一行空的"本章目标："。
       if (patch.goal !== undefined) meta.goal = patch.goal;
       if (patch.summary !== undefined) meta.summary = patch.summary;
+      // 自检计数必须落盘（模型自己数记不住）；`null` 是显式清除，`undefined` 才是"没传"。
+      if (patch.review === null) delete meta.review;
+      else if (patch.review !== undefined) meta.review = patch.review;
     });
   }
 

@@ -115,6 +115,9 @@ export function normalizeLoreKeys(keys: string): string {
 /**
  * 选取要注入的词条：keys 为空 = 常驻注入；有关键词时仅当任一关键词
  * 出现在续写上下文里才注入。禁用或内容为空的条目一律排除。
+ *
+ * 这是**不设上限**的口径，用于「一共命中了几条」这类计数与老调用方；
+ * 真正决定往简报里塞什么的，是 `rankLoreEntries`（排序 + 双上限）。
  */
 export function selectLoreEntries(
   entries: PromptProject["lorebook"],
@@ -129,11 +132,94 @@ export function selectLoreEntries(
   });
 }
 
-function lorebookBlock(
+/**
+ * 命中词条的注入上限（第 6 步的**本地治理**）。
+ *
+ * 为什么需要：`selectLoreEntries` 是「命中即注入」，一本书 200 条词条、某章同时提到
+ * 城墙/祭司/夜祷时可能一次命中 30 条——全文进提示词，真正相关的那 5 条被淹掉
+ * （docs/design/auto-writer.md §8.1 称之为「糊注入」）。
+ *
+ * 为什么是本地方案而不是起子 agent：这一层要**毫秒级、零 token、结果稳定**，
+ * 它是每章都跑无数次的热路径。语义筛选作为**可选开关**存在（`novel_context filter=true`）。
+ */
+export interface LoreLimits {
+  /** 命中条目的注入条数上限；<= 0 = 不限 */
+  maxEntries: number;
+  /** 命中条目的注入字符预算（按条目名 + 正文算）；<= 0 = 不限 */
+  maxChars: number;
+}
+
+export const UNLIMITED_LORE: LoreLimits = { maxEntries: 0, maxChars: 0 };
+
+/** 一次注入筛选的结果：四类各自独立，调用方按需要报给模型 */
+export interface LoreSelection {
+  /** 常驻条目（keys 为空）：作者显式要求每回合都带，**不占上限** */
+  alwaysOn: PromptProject["lorebook"];
+  /** 命中且真的进了简报的条目（按相关度降序） */
+  injected: PromptProject["lorebook"];
+  /** 命中但被上限砍掉的条目（按相关度降序）——调用方要**点名**，否则模型不知道还有它们 */
+  truncated: PromptProject["lorebook"];
+  /** 启用且内容非空、但关键词没出现在上下文里的条目 */
+  skipped: PromptProject["lorebook"];
+}
+
+function matchedKeyCount(entry: PromptProject["lorebook"][number], ctx: string): number {
+  return splitLoreKeys(entry.keys)
+    .map((k) => normalizeForMatch(k))
+    .filter(Boolean)
+    .filter((k) => ctx.includes(k)).length;
+}
+
+/**
+ * 命中条目按**相关度**（命中几个关键词）排序后按上限取前若干条。
+ *
+ * 两个刻意的口径：
+ * - 同分按 id 稳定排序——否则同样输入下注入的内容会随词条文件顺序漂移，简报不可复现。
+ * - **至少放进去一条**：单条词条就超过字符预算时也照放，否则"预算"会把设定整块清空，
+ *   而模型拿不到任何设定比多花几百 token 更糟。
+ */
+export function rankLoreEntries(
   entries: PromptProject["lorebook"],
   contextText: string,
-): string | null {
-  const active = selectLoreEntries(entries, contextText);
+  limits: LoreLimits = UNLIMITED_LORE,
+): LoreSelection {
+  const ctx = normalizeForMatch(contextText);
+  const alwaysOn: PromptProject["lorebook"] = [];
+  const hits: { entry: PromptProject["lorebook"][number]; score: number }[] = [];
+  const skipped: PromptProject["lorebook"] = [];
+  for (const entry of entries) {
+    if (!entry.enabled || !entry.content.trim()) continue;
+    const keys = splitLoreKeys(entry.keys).map((k) => normalizeForMatch(k)).filter(Boolean);
+    if (keys.length === 0) {
+      alwaysOn.push(entry);
+      continue;
+    }
+    const score = matchedKeyCount(entry, ctx);
+    if (score > 0) hits.push({ entry, score });
+    else skipped.push(entry);
+  }
+  hits.sort(
+    (a, b) => b.score - a.score || (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0),
+  );
+  const injected: PromptProject["lorebook"] = [];
+  const truncated: PromptProject["lorebook"] = [];
+  let chars = 0;
+  for (const { entry } of hits) {
+    const size = entry.name.length + entry.content.length;
+    const overCount = limits.maxEntries > 0 && injected.length >= limits.maxEntries;
+    const overChars = limits.maxChars > 0 && injected.length > 0 && chars + size > limits.maxChars;
+    if (overCount || overChars) {
+      truncated.push(entry);
+      continue;
+    }
+    injected.push(entry);
+    chars += size;
+  }
+  return { alwaysOn, injected, truncated, skipped };
+}
+
+function loreBlockFromSelection(selection: LoreSelection): string | null {
+  const active = [...selection.alwaysOn, ...selection.injected];
   if (active.length === 0) return null;
   const blocks = active
     .map((e) => `### ${singleLine(e.name.trim() || e.keys)}\n${e.content.trim()}`)
@@ -172,7 +258,7 @@ export function renderStoryString(
 function buildStoryVars(
   project: PromptProject,
   characters: PromptCharacter[],
-  contextText: string,
+  lore: LoreSelection,
 ): Record<string, string> {
   const join = (get: (c: PromptCharacter) => string): string =>
     characters
@@ -189,7 +275,7 @@ function buildStoryVars(
     personality: join((c) => c.personality),
     scenario: join((c) => c.scenario),
     // 本应用 lorebook 不区分插入位置，统一放 wiBefore
-    wiBefore: lorebookBlock(project.lorebook ?? [], contextText) ?? "",
+    wiBefore: loreBlockFromSelection(lore) ?? "",
     wiAfter: "",
     persona: "",
     anchorBefore: "",
@@ -228,10 +314,14 @@ export function buildSystemPrompt(
   characters: PromptCharacter[],
   contextText = "",
   preset?: Preset | null,
-): { text: string; warnings: string[] } {
+  loreSelection?: LoreSelection,
+): { text: string; warnings: string[]; lore: LoreSelection } {
   const sections: string[] = [];
   const warnings: string[] = [];
   const charName = characters[0]?.name ?? "";
+  // 不传就用「不限上限」的本地筛选——与实现第 6 步之前逐字相同，老调用方/单测不受影响。
+  // 生产路径（novel_context）显式传自己算好的 selection，因为那层还要叠加 agent 筛选。
+  const lore = loreSelection ?? rankLoreEntries(project.lorebook ?? [], contextText);
 
   const intro = preset?.systemPrompt.trim();
   // 无参与角色时 {{char}} 宏替换为空串
@@ -258,7 +348,7 @@ export function buildSystemPrompt(
   }
 
   if (storyTemplate) {
-    const vars = buildStoryVars(project, characters, contextText);
+    const vars = buildStoryVars(project, characters, lore);
     sections.push(renderStoryString(storyTemplate, vars));
     // 模板引用了却没有内容的变量 = 这段设定不会进提示词
     const empty = [...templateVars(storyTemplate)].filter((name) => {
@@ -277,8 +367,8 @@ export function buildSystemPrompt(
       sections.push(`## 世界观与背景\n${project.worldbuilding.trim()}`);
     }
 
-    const lore = lorebookBlock(project.lorebook ?? [], contextText);
-    if (lore) sections.push(lore);
+    const block = loreBlockFromSelection(lore);
+    if (block) sections.push(block);
 
     if (characters.length > 0) {
       const blocks = characters.map(characterBlock).join("\n\n");
@@ -292,7 +382,7 @@ export function buildSystemPrompt(
 
   sections.push(OUTPUT_RULES);
 
-  return { text: sections.join("\n\n"), warnings };
+  return { text: sections.join("\n\n"), warnings, lore };
 }
 
 /** 前文章节摘录（续写上下文用） */
@@ -304,8 +394,10 @@ export interface PrevChapterExcerpt {
 /**
  * 围栏长度：正文里出现一行 ``` 就会提前闭合围栏，把后面的文本放到栏外
  * （prompt 注入）。所以围栏至少比正文里最长的一串反引号长一个。
+ *
+ * 导出给 `domain/review.ts`：自检子 agent 的提示词里同样要包正文。
  */
-function fenceFor(body: string): string {
+export function fenceFor(body: string): string {
   const longest = [...body.matchAll(/`+/g)].reduce((max, m) => Math.max(max, m[0].length), 0);
   return "`".repeat(Math.max(3, longest + 1));
 }

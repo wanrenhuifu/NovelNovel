@@ -12,7 +12,7 @@
  * （含首方 UI）一起加载不出来。所以 `dsh.client` 与产物必须同时成立——
  * 装之前先跑 `scripts/test-manifest.mjs`，它把宿主那两个抛点变成红灯。
  */
-import type { Context, DefineTool } from "./contract";
+import type { Context, DefineTool, SubagentsService } from "./contract";
 import { registerClientApi } from "./clientApi";
 import { registerNovelCommand } from "./command";
 import { loadHarnessModule } from "./harness";
@@ -45,6 +45,21 @@ export interface PluginConfig {
   maxPrevChapterCount?: number;
   /** 单章可摘取的字数上限。默认 20000 */
   maxPrevChapterChars?: number;
+  /** novel_review 的字数下限；0（默认）= 不设下限，不误伤短篇 */
+  minChapterChars?: number;
+  /** novel_review 判定「与前一章重复」的连续重合长度。默认 20；0 = 不查重复 */
+  maxRepeatRunChars?: number;
+  /** novel_review 是否检查正文里混进的标题/元话语。默认 true */
+  reviewFormatChecks?: boolean;
+  /** 同一章连续判不合格几次后不再建议重写、改为交给作者。默认 3；0 = 不设上限 */
+  maxReviewAttempts?: number;
+  /** 命中词条的注入条数上限（常驻条目不占额度）。默认 8；0 = 不限 */
+  maxInjectedLoreEntries?: number;
+  /** 命中词条的注入字符预算。默认 4000；0 = 不限 */
+  maxInjectedLoreChars?: number;
+  /** novel_review 子 agent 的模型路由覆盖（留空 = 继承当前会话默认） */
+  reviewProvider?: string;
+  reviewModel?: string;
 }
 
 /** 摘录类参数的硬上限：比这更长就不是「摘录」，而是整章/整本进提示词 */
@@ -80,6 +95,18 @@ export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
     }
     return value;
   };
+  const bool = (value: boolean | undefined, fallback: boolean, field: string): boolean => {
+    if (value === undefined) return fallback;
+    if (typeof value !== "boolean") throw new Error(`dsh-novelnovel: ${field} must be a boolean`);
+    return value;
+  };
+  const text = (value: string | undefined, field: string): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string") throw new Error(`dsh-novelnovel: ${field} must be a string`);
+    return value.trim() || undefined;
+  };
+  const reviewProvider = text(raw.reviewProvider, "reviewProvider");
+  const reviewModel = text(raw.reviewModel, "reviewModel");
   return {
     dataDir: dataDir.replace(/[\\/]+$/, ""),
     defaultPrevChapterCount: count(raw.defaultPrevChapterCount, 1, "defaultPrevChapterCount"),
@@ -97,6 +124,14 @@ export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
       "maxPrevChapterChars",
       HARD_MAX_EXCERPT_CHARS,
     ),
+    minChapterChars: count(raw.minChapterChars, 0, "minChapterChars"),
+    maxRepeatRunChars: count(raw.maxRepeatRunChars, 20, "maxRepeatRunChars"),
+    reviewFormatChecks: bool(raw.reviewFormatChecks, true, "reviewFormatChecks"),
+    maxReviewAttempts: count(raw.maxReviewAttempts, 3, "maxReviewAttempts"),
+    maxInjectedLoreEntries: count(raw.maxInjectedLoreEntries, 8, "maxInjectedLoreEntries"),
+    maxInjectedLoreChars: count(raw.maxInjectedLoreChars, 4000, "maxInjectedLoreChars"),
+    ...(reviewProvider !== undefined ? { reviewProvider } : {}),
+    ...(reviewModel !== undefined ? { reviewModel } : {}),
   };
 }
 
@@ -105,7 +140,25 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
   const store = new NovelStore(ctx, config);
   const skillStore = new SkillStore(ctx, config.dataDir);
 
-  registerTools({ ctx, store, skillStore, config, defineTool });
+  /**
+   * `subagents` 是**软依赖**：novel_review 的语义自检要靠它，但内核型组合（只有 base）
+   * 里没有那一行。所以走 `ctx.inject` 而不是在 apply 里 `ctx.get`——后者只查一次、
+   * 拿不到就永远拿不到（这条坑在 connection / skills / commands / systemPrompt 上各踩过一次）。
+   * 没有它时 novel_review 降级为只跑本地门槛并在报告里**明说**，不是静默通过。
+   */
+  let subagents: SubagentsService | undefined;
+  ctx.inject(["subagents"], (subagentCtx: Context) => {
+    subagents = subagentCtx.subagents;
+  });
+
+  registerTools({
+    ctx,
+    store,
+    skillStore,
+    config,
+    defineTool,
+    subagents: () => subagents,
+  });
 
   // Web 面板的只读接口；没有 connection 服务（headless/sdk 组合）时自行跳过
   registerClientApi(ctx, store);
@@ -135,6 +188,7 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
           "1. `novel_project action=show` (or `action=list`) loads the project; `action=create` starts a new novel.",
           "2. `novel_context chapter=<ref>` returns the author's brief for that chapter (worldbuilding, keyword-matched lorebook entries, participating character cards, active preset, previous-chapter excerpts). Treat it as authoritative for setting, characterisation and style.",
           "3. Write the prose, then land it with `novel_chapter action=append` (`action=write` replaces a chapter).",
+          "3b. Check it before keeping it: `novel_review chapter=<ref>` (pass `text=` to review a draft before it is ever written to disk). It returns pass / fail / inconclusive plus concrete issues; inconclusive is not a pass. After revising, review again — when it says STOP, hand the issues to the author instead of rewriting.",
           "4. Record new facts as they appear: `novel_lorebook action=add` for world settings, `novel_character action=import` for SillyTavern cards, `novel_preset` for prompt presets.",
           "5. Load a craft skill when the request is about *how* it is written rather than what happens: `novel-prose` (voice and de-AI), `novel-dialogue`, `novel-scene` (pacing), `novel-outline` (structure, plot holes, web-novel conventions). The brief from `novel_context` still outranks them.",
           "6. Use `novel_skill` when the user brings their own writing method, or asks to share one: it imports/exports JSON skill packs into the project's `.dsh/skills/`, which the harness loads on its own.",

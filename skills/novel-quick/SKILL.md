@@ -44,16 +44,23 @@ deliberately: it is the one outline level that is **pushed**, so every later
 1. `novel_context chapter=<ref>` — the brief: the whole-book outline (when
    `project.outline` is set), setting and style, keyword-matched
    lorebook entries, participating character cards, the active preset, the tail of the
-   previous chapters and of this chapter, plus the instruction block for this round.
+   previous chapters and of this chapter, plus the instruction block for this round
+   and how much of the book is still unwritten.
    Pass `instruction="…"` for anything other than a plain continuation.
 2. Write the prose in the project's language. Only story text — no headings, notes or
    meta commentary inside a chapter.
-3. Land it: `novel_chapter action=append chapter=<ref> text="…"` (or `action=write` to
+3. Check it before it lands: `novel_review chapter=<ref> text=<the draft>`. `fail` →
+   revise against the listed issues and review again; `STOP` → report the issues to the
+   author instead of rewriting again; `inconclusive` is not a pass.
+4. Land it: `novel_chapter action=append chapter=<ref> text="…"` (or `action=write` to
    replace a chapter wholesale).
-4. Record the facts the next round must respect: `novel_lorebook action=add …` for
+5. Record the facts the next round must respect: `novel_lorebook action=add …` for
    places, rules and relationships, `novel_chapter action=meta goal="…"` for what the
    chapter you just wrote was for.
-5. Next chapter: `novel_chapter action=create …`, then back to step 1.
+6. Next chapter: `novel_chapter action=create …`, then back to step 1 — unless
+   `novel_context` reports that every chapter already has text, in which case say so
+   and stop. For a multi-chapter run, put the task under a goal (`create_goal`) while
+   you are still in the turn the user asked in.
 
 ## If a throughline shows up after all
 

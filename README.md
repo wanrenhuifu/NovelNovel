@@ -186,7 +186,8 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 | `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词=常驻注入） |
 | `novel_preset` | 写作预设导入（SillyTavern JSON）/ 手写 / 编辑 / 激活 / 停用 |
 | `novel_skill` | 项目级写作方法技能：列出 / 导入技能包（JSON）/ 导出分享 / 删除 |
-| `novel_context` | **写作前必调**：组装本次的写作简报（系统提示词 + 指令块 + 注入清单 + 参与角色） |
+| `novel_context` | **写作前必调**：组装本次的写作简报（系统提示词 + 指令块 + 注入清单 + 参与角色 + 写作进度） |
+| `novel_review` | **写完必调**：一章的判定闸——本地硬门槛（字数/格式/与前章重复）+ 只读子 agent 的语义自检（推进 goal 了吗、与大纲/设定/前文矛盾吗），返回 `pass` / `fail` / `inconclusive` 与具体改法 |
 | `novel_export` | 整书导出 Markdown / TXT，或全量备份 JSON |
 
 另外自带 8 个技能，agent 按需加载（`/novel-plan` / `/novel-prose` 之类的手势也能直接触发）：
@@ -219,7 +220,55 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
   没有就适合走这条，短篇也走这条。
 
 两条路径共用同一个写作循环：`novel_context chapter=<ref>` 取简报 → 写正文 →
-`novel_chapter action=append` 落盘 → 用 `novel_lorebook action=add` 记新设定。
+`novel_review` 自检（没过就改，改完再自检）→ `novel_chapter action=append` 落盘 →
+用 `novel_lorebook action=add` 记新设定。
+
+### 自检闸：`novel_review`
+
+自动写作最容易出的问题不是"写不出来"，是"写出来了但这一章是废的"（没推进目标、跟上文矛盾、
+跟上一章重复）。所以落盘前后各有一道闸，分两层，谁便宜谁先跑：
+
+1. **本地硬门槛**（毫秒级、零 token）：字数下限（默认不设）、正文里混进的 Markdown 标题 /
+   代码围栏 / `字数：1234` 这类元话语、与**上一章尾部**连续重合超过 20 字的片段。
+   不过就直接判不合格，**不会**去起子 agent。
+2. **只读子 agent 的语义判定**：把本章正文 + 本章目标 + 全书大纲 + 上一章尾部 + 命中词条
+   交给一个一次性子 agent，让它答"推进了目标吗 / 与前文矛盾吗 / 是不是半成品"。
+   它**只判定、只给建议**：没有改写正文的权限，也没有任何工具（技能都加载不了）。
+
+返回三种结论，第三种是关键：
+
+| 结论 | 含义 | 该怎么办 |
+|---|---|---|
+| `pass` | 两层都过了 | 保留这一章，写下一章 |
+| `fail` | 有问题，附具体改法 | 按清单改，改完再 `novel_review` |
+| `inconclusive` | 本地过了，但**语义没判成**（这个组合没有 subagent 服务 / 子 agent 报错 / 返回坏形状） | **这不是通过**：自己判连续性与任务契合度再决定 |
+
+几条刻意如此的口径：
+
+- **先审草稿再落盘是首选**：`novel_review chapter=3 text="<草稿>"` 在正文还没写进文件时就能判，
+  过了再 `action=append`。这样永远不会覆盖已经落盘的正文。
+- **同一章连续判不合格的计数会落盘**（`chapters/index.json` 每章的 `review` 字段）。
+  到上限（默认 3 次）报告里会出现 `STOP`：不再建议重写，而是把问题交给作者决定。
+  **基础服务故障不计入、也不清零**这个计数——它不是"这一章写坏了"。
+- **只有 `pass` 会把摘要写进章节**：判不合格的正文马上要重写，此时落一份摘要是给未来留假信息。
+- **自检不会自己写词条**：子 agent 提的新设定只是**建议**，由前台模型决定要不要
+  `novel_lorebook action=add`（写权留在前台）。
+- `local_only=true` 只跑第一层，用来在草稿阶段白嫖一次长度/格式/重复检查。
+
+### 让它自己写完一整本
+
+`novel_context` 与 `novel_project action=show` 都会报一行进度
+（`progress: 12/24 chapters have text · next unwritten: 第十三章 [xxx] — goal: …`），
+所以"还剩几章、下一章是谁"不用模型自己数。整本书的循环靠 harness 的 goal 自动续轮驱动：
+
+```text
+（用户在某一轮里说"把这本书写完"）
+create_goal objective="写完《长夜将至》全部 24 章，每章都要过 novel_review"
+→ 之后每一轮写一章：novel_context → 写 → novel_review → action=append → 记设定 → 下一章
+```
+
+`create_goal` 只在**真人开口的那一轮**可用（harness 的硬闸），所以技能会要求在收到请求的那一轮
+就把目标打上，而不是等到后面。
 
 ## 侧栏面板（只读）
 
@@ -315,10 +364,35 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
     defaultRecentChars: 4000      # 当前章摘取的尾部字数（默认 3000）
     maxPrevChapterCount: 5        # 模型单次能要的前文章节数上限（默认 10，硬上限 20）
     maxPrevChapterChars: 8000     # 单章能摘取的字数上限（默认 20000）
+    minChapterChars: 800          # novel_review 的字数下限（默认 0 = 不设）
+    maxRepeatRunChars: 20         # 与上一章重合多少字算重复（默认 20，0 = 不查）
+    reviewFormatChecks: true      # 是否检查正文里的标题/元话语（默认 true）
+    maxReviewAttempts: 3          # 同一章连败几次就停下来交给作者（默认 3，0 = 不设上限）
+    maxInjectedLoreEntries: 8     # 命中词条的注入条数上限（默认 8，0 = 不限）
+    maxInjectedLoreChars: 4000    # 命中词条的注入字符预算（默认 4000，0 = 不限）
+    reviewProvider: deepseek      # 自检子 agent 的模型路由（默认继承当前会话）
+    reviewModel: deepseek-chat
 ```
 
-非法配置（绝对路径、`..`、负数、超过硬上限）在加载期直接抛错，不静默取默认值。
-后两项是**上下文预算的闸门**：不设上限时模型可以要求把整本书读进简报。
+非法配置（绝对路径、`..`、负数、超过硬上限、布尔/字符串写错）在加载期直接抛错，不静默取默认值。
+`maxPrevChapterChars` / `maxPrevChapterCount` 是**上下文预算的闸门**：不设上限时模型可以要求把
+整本书读进简报。`maxInjectedLoreEntries` / `maxInjectedLoreChars` 是词条侧的同类闸门（见下）。
+
+### 词条注入的闸门
+
+`novel_lorebook` 的规则是"关键词命中就注入"。一本书 200 条词条时，某一章同时提到城墙、祭司、
+夜祷，可能一次命中 30 条——全文进提示词，真正相关的那几条被淹掉。所以命中条目要过两道闸，
+**默认那一道永远是本地算的**（毫秒级、零 token、结果稳定）：
+
+1. **相关度排序 + 双上限**：按"命中几个关键词"降序（同分按 id 稳定排序，所以简报可复现），
+   逐条注入直到**条数上限或字符预算先到**为止。被砍掉的条目会在简报里**点名**
+   （`(left out by the injection limits: …)`），需要时模型自己去读 `lorebook.json`。
+   **无关键词的常驻条目不受限**——那是作者显式要求每回合都带的。
+   单条词条就超预算时也至少放它一条：清空全部设定比多花几百 token 更糟。
+2. **可选：只读子 agent 的语义筛选**（`novel_context filter=true`）。关键词召回是机械的
+   （命中 3 个词的不一定比命中 1 个的更相关），所以要更准时可以多花一次子 agent 往返。
+   它的权限是**只准删不准加**：返回的是"这些候选里哪些不要"，候选池之外的 id 一律忽略并点名。
+   **筛选失败就退回本地召回的结果**（漏注入丢设定，比多注入严重得多），默认不开启。
 
 ## 数据布局
 
@@ -330,7 +404,7 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
     outline.md                          可选：细纲（分卷/分幕、伏笔、关系变化）。**不进简报**，模型按需 `read`
     lorebook.json                       世界观词条
     presets.json                        写作预设与激活项
-    chapters/index.json                 章节元数据（标题、标签、顺序；+ 可选的 `goal` / `summary`）
+    chapters/index.json                 章节元数据（标题、标签、顺序；+ 可选的 `goal` / `summary` / `review`）
     chapters/<chapterId>.md             章节正文（Markdown，可直接用 read/write 工具编辑）
     characters/<id>.json               角色卡（rawData 无损保留）
     characters/<id>.<ext>              原始头像（扩展名与真实媒体类型一致）
@@ -381,6 +455,24 @@ novel_chapter action=meta chapter=3 goal="…" summary="…"   # 之后补写或
 
 `summary` 是唯一没有消费方的字段：**故意不注入提示词**——摘要有损，
 写第 N 章时用它替换原文会悄悄丢掉细节（§3.1），所以只留给检索结果展示。
+
+### 每章的自检记录（`review`，可选）
+
+`novel_review` 会把结论写回**同一章的** `chapters/index.json`：
+
+```json
+{
+  "id": "a1b2c3d4e5", "title": "第三章 祭坛", "goal": "…", "summary": "…",
+  "review": { "attempts": 2, "verdict": "fail", "at": 1760000000000, "issues": ["…"], "semantic": "ok" }
+}
+```
+
+- `attempts` 是**连续判不合格的次数**（通过时归零）。它必须落盘：模型自己数记不住，
+  数丢了就会无限重写同一章。到 `maxReviewAttempts` 就不再建议重写，改为交给作者。
+- `verdict` 是三值的：`pass` / `fail` / `inconclusive`。写 `pass` 而实际没做语义检查，
+  等于在数据文件里说谎——所以"本地过了但没判成"如实记 `inconclusive`，且**不改动** `attempts`。
+- `semantic` 记录语义自检实际走到哪一步（`ok` / `local-only` / `unavailable` / `failed`），
+  人翻文件就能看出"这一章当时到底检查了什么"。
 
 ## 设计说明
 
@@ -450,15 +542,32 @@ novel_chapter action=meta chapter=3 goal="…" summary="…"   # 之后补写或
     （否则表现为"技能明明放好了、工具说没有"）；
   - 坏作品目录、坏角色卡、坏词条文件同理，都在列表里点名，而不是消失。
   这条原则是踩出来的：同一个模式今天在三处独立出现过，每一处都表现为"工具说没有、其实东西在"。
+- **自检的子 agent 是"一次性"的，不要按"后台常驻 agent"理解**：DSH 里能拿到的只有
+  `ctx.subagents.start(provider, request)` → `{ id, result, dispose }`（`dsh-base` 提供 `spawn`
+  与 `fork` 两个 provider）。**没有**持久 agent 句柄、**没有**跨进程邮箱，`ctx.jobs` 也是进程内的
+  （官方 README：进程死则 job 死）。所以"记账"就是再起一个：每章自检起一个干净上下文的 `spawn` 子
+  agent，拿到结构化结论就销毁。三条细节都以真源码为准：
+  - `result` **从不 reject**：失败信息在 `stopReason` / `diagnostic` 里，判"有没有结论"要看
+    `structured` 在不在（`dsh-subagent-in-process-driver` 的 `readResult`）。
+  - `outputSchema` 是**标准 JSON Schema**（object 根、`required` 是数组），provider 会给子 agent
+    挂一个 `structured_output` 工具；形状不合规会在 `setup()` 里抛错，所以测试拿 harness 自己的
+    `assertObjectJsonSchema` 验它，而不是自己再写一遍断言。
+  - 权限收窄用 `toolFilter: { allow: [] }`（"一个全局工具都不留"），**不是**逐个 `deny`：
+    `tools.restrict()` 点名不存在的工具会**直接抛错**，硬编码清单在别的 profile 上会把整条链路弄挂。
+    空 `allow` 不会误伤子 agent 自己那层注册的 `structured_output`——限制只作用于**继承来的**
+    工具面，harness 源码里写得很明确（`dsh-tools` 的 `view()`：*never what its OWN layer registers*）。
+- **这条链路还没在真实模型上跑过**：自检的语义判定、技能路由、简报的实际 token 量都只有工具层证据。
+  `novel_review` 的验证是"假 `subagents` 服务 + 真 schema 校验"，它证明的是**插件这一半**对；
+  子 agent 自己会不会老实判定、会不会在该停的时候停，属于还没有证据的部分。
 
 ## 开发
 
 ```bash
 npm run build       # esbuild 打包两个半边：lib/index.js（宿主）+ lib/client.js（浏览器经典脚本）
 npm run typecheck   # tsc -p .（严格模式，零错误）
-npm test            # 8 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配）+ 5 个客户端单测
+npm test            # 9 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 自检与词条治理 / 检索 / 排序 / 技能包 / 字数与词条匹配 / …）+ 5 个客户端单测
 npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
-npm run test:dsh    # 端到端验证 56 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
+npm run test:dsh    # 端到端验证 64 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
 npm run test:race   # 并发交错：CAS 真的挡住了吗（单次调用测不出静默覆盖）
 npm run test:edge   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 半成品状态的点名
 npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
@@ -497,8 +606,12 @@ SkillRegistry + observation policy）并驱动全部工具：作品/章节/词�
 （技能包导入→列出→导出→再导入→删除，含手写技能不被覆盖、校验失败不写一半）/命令处理器/配置校验/
 工作区边界与损坏文件容错（坏作品目录、坏角色卡、索引缺失、拒绝覆盖已有文件、追加空白保真、
 `position`/`limit` 边界、同名预设）/观察记录归属/真分发链路（`ctx.tools.execute`：参数校验 + 输出
-schema）/卸载清理/系统提示词段，共 56 项检查，不调用模型。
-`npm test` 是它的快速补充：7 个纯逻辑单测直接测 `src/domain/` 里的解析与组装函数，
+schema）/卸载清理/系统提示词段，共 64 项检查，不调用模型。其中**自检那一段用一个假的 `subagents`
+服务**：真起子 agent 就要调模型，而这里要验的是我们这一半——传出去的 spec（材料齐不齐、
+子 agent 的权限有没有被收空、persona 与 `outputSchema` 对不对）、拿回来之后的处理
+（连败计数落盘、坏形状降级、只读不写词条）；`outputSchema` 本身还额外过了一遍 harness
+**真的** `assertObjectJsonSchema` / `validateJsonSchemaValue`。
+`npm test` 是它的快速补充：直接测 `src/domain/` 里的解析与组装函数，
 其中「导入 → 改字段 → 导出 → 再导入」专门守着「改了角色卡再导出不会退回旧值」这条。
 
 `tests/perf-probe.mjs` 是性能探针（`npm run test:perf`）：铺 3 部 × 200 章，

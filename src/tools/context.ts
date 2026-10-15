@@ -4,9 +4,20 @@
  * harness 自己就是写作模型，所以这里不调用 LLM，而是把「作者设定 + 命中词条 +
  * 参与角色 + 预设模板 + 前文摘录 + 本章结尾」组装成一份写作简报交给 agent，
  * 拼装本身走 domain/prompt.ts 的 buildSystemPrompt / buildContinueUserMessage。
+ *
+ * 这一步是**每章都要跑的热路径**，所以默认全程本地（毫秒级、零模型往返），
+ * 两个可选开关才可能起子 agent：`filter=true`（候选词条的语义筛选，只准删不准加）。
  */
-import { buildContinueUserMessage, buildSystemPrompt, selectLoreEntries } from "../domain/prompt";
+import { buildContinueUserMessage, buildSystemPrompt, rankLoreEntries } from "../domain/prompt";
+import { buildLoreFilterPrompt, normalizeLoreFilter, LORE_FILTER_OUTPUT_SCHEMA } from "../domain/loreFilter";
 import { lines, TEXT_OUTPUT, textRender, type ToolDeps } from "./shared";
+import { runStructuredSubagent } from "./subagent";
+
+/** 候选池筛选的子 agent 角色说明（模型可见，所以是英文） */
+const FILTER_PERSONA =
+  "You triage a novel project's setting entries for one chapter. You only ever remove entries from the " +
+  "candidate list you are given; you never add, rewrite or reorder anything. You report your answer with " +
+  "the structured-report tool and stop.";
 
 /**
  * 把简报参数夹到配置上限内。
@@ -18,7 +29,7 @@ function clamp(value: number, max: number): number {
   return Math.min(Math.max(0, Math.trunc(value)), max);
 }
 
-export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps): void {
+export function registerContextTool({ ctx, store, config, defineTool, subagents }: ToolDeps): void {
   ctx.tools.register(
     defineTool({
       name: "novel_context",
@@ -26,8 +37,8 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
         "Assemble the writing brief for a chapter of the current novel project.",
         "Returns the authoritative setting/style guidance (built from worldbuilding, the lorebook entries whose keywords hit the context,",
         "the participating character cards and the active preset), the tail of the previous chapters, the tail of this chapter,",
-        "and the exact instruction block to treat as the writing task.",
-        "Call this before writing or continuing prose, then land the prose with novel_chapter action=append.",
+        "the exact instruction block to treat as the writing task, and how much of the book is still unwritten.",
+        "Call this before writing or continuing prose, then land the prose with novel_chapter action=append and check it with novel_review.",
       ),
       parameters: {
         chapter: {
@@ -55,6 +66,12 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
         recent_chars: {
           type: "number",
           description: `Characters taken from the tail of this chapter as the continuation anchor. Defaults to ${config.defaultRecentChars}, maximum ${config.maxPrevChapterChars}.`,
+        },
+        filter: {
+          type: "boolean",
+          description:
+            "Opt in to a semantic pass over the keyword-matched lorebook entries: a read-only sub-agent drops the ones that cannot affect this chapter. " +
+            "Costs one sub-agent round trip; without it the brief is assembled locally only. Entries without keywords (always-on) are never dropped.",
         },
       },
       output: { schema: TEXT_OUTPUT, render: textRender },
@@ -85,6 +102,57 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
 
         // 前文摘录也参与 lorebook 关键词匹配（与简报组装同一口径）
         const contextText = [...prev.map((item) => item.text), recent].join("\n");
+
+        // 第 6 步的本地治理：先拿到**完整候选池**（召回要全，不漏），
+        // 再（可选）让子 agent 做一次只准删的筛选，最后才按条数/字符双上限取前若干条。
+        const pool = rankLoreEntries(lorebook, contextText);
+        let candidates = lorebook;
+        let filterNote: string | null = null;
+        if (args.filter === true) {
+          // 只把**命中**的条目交出去筛：常驻条目是作者刻意每回合都带的，不在候选池里。
+          if (pool.injected.length === 0) {
+            filterNote = "semantic filter: skipped (no keyword-matched entries to triage)";
+          } else {
+            const outcome = await runStructuredSubagent({ config, subagents }, exec, {
+              label: `novel_context filter: ${chapter.title}`,
+              persona: FILTER_PERSONA,
+              outputSchema: LORE_FILTER_OUTPUT_SCHEMA,
+              prompt: buildLoreFilterPrompt({
+                projectTitle: project.title,
+                chapterTitle: chapter.title,
+                goal: chapter.goal?.trim() ?? "",
+                candidates: pool.injected,
+                context: [recent, ...prev.map((item) => item.text)].join("\n"),
+              }),
+            });
+            if (outcome.kind !== "ok") {
+              filterNote = `semantic filter: ${outcome.kind === "unavailable" ? "UNAVAILABLE" : "FAILED"} (${outcome.reason}) — all candidates kept`;
+            } else {
+              const verdict = normalizeLoreFilter(outcome.structured, pool.injected);
+              if (verdict === null) {
+                filterNote = "semantic filter: unusable answer — all candidates kept";
+              } else {
+                candidates = lorebook.filter((entry) => !verdict.dropped.has(entry.id));
+                const names = pool.injected
+                  .filter((entry) => verdict.dropped.has(entry.id))
+                  .map((entry) => entry.name || entry.keys);
+                filterNote = lines(
+                  `semantic filter: dropped ${verdict.dropped.size} of ${pool.injected.length} keyword-matched entries` +
+                    (names.length > 0 ? ` (${names.join(", ")})` : ""),
+                  verdict.unknown.length > 0
+                    ? `⚠️ it also named ${verdict.unknown.length} id(s) that are not in the candidate list (ignored): ${verdict.unknown.join(", ")}`
+                    : null,
+                );
+              }
+            }
+          }
+        }
+
+        const selection = rankLoreEntries(candidates, contextText, {
+          maxEntries: config.maxInjectedLoreEntries,
+          maxChars: config.maxInjectedLoreChars,
+        });
+
         const systemPrompt = buildSystemPrompt(
           {
             title: project.title,
@@ -103,6 +171,7 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           })),
           contextText,
           preset,
+          selection,
         );
         // 章级 goal 进**指令块**而不是系统提示词：buildSystemPrompt 收不到章节元数据
         // （见 domain/prompt.ts 的 buildContinueUserMessage）。为空时输出与旧版逐字相同。
@@ -112,17 +181,21 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           prev,
           chapter.goal ?? "",
         );
-        const injected = selectLoreEntries(lorebook, contextText);
-        const alwaysOn = injected.filter((entry) => !entry.keys.trim());
-        const keywordHit = injected.filter((entry) => entry.keys.trim());
-        // 可注入条目 = 启用且内容非空（与 selectLoreEntries 的过滤口径一致），
-        // 否则「跳过 N 条」会把「启用但内容为空」的条目也算成「关键词没出现」。
+        const injected = [...selection.alwaysOn, ...selection.injected];
         const eligible = lorebook.filter((entry) => entry.enabled && entry.content.trim());
-        const skipped = eligible.length - injected.length;
+        const skipped = selection.skipped.length;
+        const truncated = selection.truncated.map((entry) => entry.name || entry.keys);
+        // 写作进度：**一次 listDir**，不读任何正文（自动写作循环每轮都要问"下一章是谁"）
+        const progress = await store.chapterProgress(session, projectId);
+        const next = progress.pending[0];
 
         const summary = lines(
           `# Writing brief · 《${project.title}》 / ${chapter.title} [${chapter.id}]`,
           `chapter is ${chapter.words} words${chapter.tags.length > 0 ? ` · tags: ${chapter.tags.join("/")}` : ""}`,
+          `progress: ${progress.written}/${progress.total} chapters have text` +
+            (next
+              ? ` · next unwritten: ${next.title} [${next.id}]${next.goal?.trim() ? ` — goal: ${next.goal.trim()}` : ""}`
+              : " · every chapter has text"),
           `preset: ${preset ? `${preset.name} (${preset.kind})` : "(built-in default)"}`,
           "",
           "## System prompt — the author's setting & style guidance (follow it)",
@@ -132,12 +205,16 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           userMessage,
           "",
           "## Injected lorebook entries",
-          keywordHit.length > 0
-            ? `keyword-triggered: ${keywordHit.map((entry) => `${entry.name} [${entry.keys}]`).join(", ")}`
+          selection.injected.length > 0
+            ? `keyword-triggered (ranked by how many keywords hit, capped at ${config.maxInjectedLoreEntries} entries / ${config.maxInjectedLoreChars} chars): ${selection.injected.map((entry) => `${entry.name} [${entry.keys}]`).join(", ")}`
             : "keyword-triggered: (none)",
-          alwaysOn.length > 0
-            ? `always-on: ${alwaysOn.map((entry) => entry.name).join(", ")}`
+          selection.alwaysOn.length > 0
+            ? `always-on (not capped): ${selection.alwaysOn.map((entry) => entry.name).join(", ")}`
             : "always-on: (none)",
+          truncated.length > 0
+            ? `(left out by the injection limits: ${truncated.join(", ")} — read lorebook.json if one of them matters here)`
+            : null,
+          filterNote,
           skipped > 0
             ? `(skipped ${skipped} injectable entries whose keywords did not appear)`
             : null,
@@ -173,7 +250,16 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
             ...(prevResult.missing.length > 0 ? { prev_chapters_missing_body: prevResult.missing } : {}),
             recent_chars: recent.length,
             injected_entries: injected.map((entry) => entry.name),
+            ...(truncated.length > 0 ? { truncated_entries: truncated } : {}),
+            eligible_lore_entries: eligible.length,
             characters: characters.map((character) => character.name),
+            progress: {
+              total: progress.total,
+              written: progress.written,
+              next_chapter_id: next?.id ?? null,
+              next_chapter_title: next?.title ?? null,
+              next_chapter_goal: next?.goal?.trim() ? next.goal.trim() : null,
+            },
           },
         };
       },

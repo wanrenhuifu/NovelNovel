@@ -1,8 +1,9 @@
 # AGENTS.md
 
 DeepSeek Harness (dsh) 插件（npm 包 `dsh-novelnovel`）：把小说写成**工作区里的普通文件**，让 harness 的
-agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出。不发模型请求（模型由 harness 提供），
-数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
+agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出。**自己不直接调模型**（模型请求都走
+harness 提供的能力：正文由当前会话写，`novel_review` 的语义自检走 `ctx.subagents` 委派一个一次性
+子 agent），数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
 
 **两个半边都做**：宿主半边是 Node 侧的工具/技能/命令/系统提示词段 + 3 条只读 `/api/novel.*` 路由；
 客户端半边是 Web 侧栏的只读面板（作品 / 章节 / 正文）。客户端半边是 **fail-closed** 的
@@ -23,10 +24,11 @@ MIT 许可（`LICENSE`）。分发走 `npm pack` 的 tarball（`prepack` 自动�
 ```bash
 npm run build       # esbuild → lib/index.js + lib/client.js（lib/ 不入库；改完 src 必须重建，profile 加载的是产物）
 npm run typecheck   # tsc -p .（严格模式，noUnusedLocals/Parameters，零错误才过）
-npm test            # 13 个纯逻辑单测（8 个 domain + 5 个客户端）
+npm test            # 14 个纯逻辑单测（9 个 domain + 5 个客户端）
 node scripts/test-card-import.mjs   # 角色卡解析链路（PNG V2 / ccv3 双写 / JSON / V1 / 世界书并入 / 关键词拆分）
 node scripts/test-card-export.mjs   # 角色卡导出往返（编辑后再导出不回退、V1 字段不丢、非 PNG 头像占位、魔数嗅探）
 node scripts/test-preset-import.mjs # 预设导入解析 + story_string 渲染（含空变量报警与 {{char}}）+ 提示词组装 + 截断
+node scripts/test-review-domain.mjs # 自检与词条治理：硬门槛（字数/格式/重复）+ 子 agent 结论归一化（各种坏形状）+ 注入排序与双上限 + 筛选只准删
 node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/上限/顺序/全半角/长度变化的小写折叠
 node scripts/test-reorder.mjs       # 章节排序：边界/位移/规范化/不可变性
 node scripts/test-skill-pack.mjs    # 技能包解析 + SKILL.md frontmatter 往返 + 项目根祖先链
@@ -39,7 +41,7 @@ node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘�
 node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
-npm run test:dsh                    # 56 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 64 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives             # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
@@ -99,17 +101,22 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `api.ts` 请求拼装/响应解析、`useChapterKeys.ts` 键盘导航、`styles.ts` 面板 CSS、`env.d.ts` 手写类型声明。
   两个插槽：`sidebar.panellist`（图标）与 `main`（面板，`key` 与侧栏 `id` 必须一致——那是两者唯一的联系）。
 - `src/tools/<name>.ts` 一个工具一个文件，`src/tools/index.ts` 注册；`src/tools/shared.ts` 放统一输出
-  形状（`TEXT_OUTPUT`/`textRender`）、`lines`/`preview`/`requireFields` 与 `ToolDeps`。
+  形状（`TEXT_OUTPUT`/`textRender`）、`lines`/`preview`/`requireFields` 与 `ToolDeps`
+  （含**软挂载的** `subagents()` 取值器：读的时候才查，拿不到就得明说，不能当成"检查通过"）；
+  `src/tools/subagent.ts` 收口"起一个只读的一次性子 agent 并拿结构化结论"（第 4 步的机制层，
+  与自检、词条筛选两条用途共用）。
 - `src/skills.ts` 枚举 `skills/*/SKILL.md` 并 `ctx.skills.register` 运行时注册（另导出
   `bundledSkillNames` 供 novel_skill 判断同名覆盖）；`src/command.ts` 是 `/novel` 命令
   （把当前作品状态以文本返回，不经过模型）。
 - `src/domain/` 纯逻辑，**不 import harness、不碰文件系统**（连 `node:*` 都不引，路径运算自己写）：
   `cardImport.ts`（角色卡解析 + 世界书提取）、`presetImport.ts`、`prompt.ts`（系统提示词组装、宏替换、
-  词条注入、续写消息拼装）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
+  词条注入与**注入治理**：`rankLoreEntries` 的相关度排序 + 条数/字符双上限、续写消息拼装）、
+  `review.ts`（自检的硬门槛、子 agent 提示词、结论归一化）、`loreFilter.ts`（候选池筛选的提示词与
+  **只准删**的归一化）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `tests/verify.mjs` 端到端（56 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（64 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
   `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
@@ -324,6 +331,28 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   拆分规则只有 `splitLoreKeys` 一份实现（读取侧与写入侧共用），写入侧由 `normalizeLoreKeys`
   规范化成「逗号 + 空格」——否则 `keys=",,"` 拆完是空数组、会被当成**常驻注入**（每回合全文
   进提示词），而列表显示"有关键词"。改语义时同步更新 `skills/novel-cards/SKILL.md` 与 README。
+- **自检的子 agent（`ctx.subagents`）四条实测口径**：DSH 里**没有持久后台 agent**——只有
+  `start(provider, request)` → `{ id, result, dispose }` 的一次性 run（`dsh-base` 提供 `spawn` / `fork`），
+  `ctx.jobs` 也是进程内的（官方 README：进程死则 job 死）。所以"每章自检"就是每章起一个干净上下文的
+  `spawn`，拿到结论即销毁，**别按"常驻 agent"设计**。四个容易记错的点：
+  ① `result` **从不 reject**：失败信息在 `stopReason` / `diagnostic` 里，判"有没有结论"要看
+  `structured` 在不在（`dsh-subagent-in-process-driver` 的 `readResult`）；
+  ② `outputSchema` 是**标准 JSON Schema**（object 根、`required` 是**字符串数组**），provider 会把它
+  注册成子 agent 的 `structured_output` 工具参数，形状不合规在 `setup()` 里就抛——所以测试拿 harness
+  自己的 `assertObjectJsonSchema` / `validateJsonSchemaValue` 验，而不是自己再写一遍断言；
+  ③ 权限收窄用 `toolFilter: { allow: [] }`（"一个全局工具都不留"），**不是**逐个 `deny`：
+  `tools.restrict()` **点名不存在的工具会直接抛错**，硬编码清单换个 profile 就能把整条链路弄挂；
+  空 `allow` 不会误伤子 agent 自己那层注册的 `structured_output`——限制只作用于**继承来的**工具面，
+  `dsh-tools` 的 `view()` 注释里写得很明确（"never what its OWN layer registers"）；
+  ④ `parent` 必须是**活的 Agent**（工具里的 `exec.agent`），拿不到就诚实失败，别伪造一个。
+  服务本身是**软依赖**：走 `ctx.inject(["subagents"], …)`（同 connection / skills 那条坑），
+  没有它时 `novel_review` 降级成只跑本地门槛并**明说"这不是通过"**，绝不静默判合格。
+- **自检的计数口径**（`ChapterMeta.review`）：三种结论里只有 `pass` / `fail` 参与计数
+  （`fail` +1、`pass` 归零），第三态 **`inconclusive` 既不加也不清零**——没有 subagent 服务、
+  子 agent 报错、返回坏形状、或只跑 `local_only`，都属于"没判成"，不是"这一章写坏了"。
+  写 `pass` 而其实没做语义检查等于在数据文件里说谎，所以数据里也如实记 `inconclusive`。
+  连败到 `maxReviewAttempts` 就**不再建议重写**（报告里 `STOP` 并让模型交给作者）——
+  这是 §2.2 的口径：停下来的条件是"正文写不出来"，所以重写必须有次数上限，而"模型自己数"记不住。
 - **写作预设**：`presetImport.ts` 按字段特征识别裸预设（`content`→system、`story_string`→context、
   `input_sequence`→instruct），含 `context`/`sysprompt`/`instruct` 子对象则当合订信封；reasoning 直接
   拒绝；**声明了字段但内容是空串的裸预设也拒绝**（导入它等于什么都不改，静默成功最误导）。
@@ -380,7 +409,17 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   而 HTTP 路由**没有 exec**——观测策略不会记录这些写入，于是首方 `write`/`edit` 之后会被要求先读一遍。
   别想当然地照搬工具的写路径。会话里要看状态用 `/novel`（不经过模型）或 `novel_project action=show`。
 - **从未跑过真实模型会话**：全部验证都在工具层，不调模型——技能路由、简报实际 token 量、
-  模型会不会滥用 `action=write` 都还没有证据。
+  模型会不会滥用 `action=write` 都还没有证据。**自检那条链路只证到了插件这一半**：
+  `npm run test:dsh` 用一个假 `subagents` 服务验"我们传出去什么、拿回来怎么处理"，
+  再用 harness 真的 `assertObjectJsonSchema` / `validateJsonSchemaValue` 验 schema；
+  子 agent **自己**判得准不准、会不会在该停的时候停、`allow: []` 在真实子会话里有没有副作用，
+  都还没有证据（`docs/design/auto-writer.md` §9 列的假设仍然成立，只是又划掉了两条）。
+- **自动写作还差第 8、9 步**：跨章记忆目前只有"近章尾部原文"（Push）——**没有检索**（Pull）。
+  三个候选（新增 `novel_recall` / 强化 `novel_chapter action=search` / 暂不做）仍未定，
+  所以模型想找第 3 章埋的伏笔时只能自己 `action=search` 或 `read`。
+  公开分发形态（npm 发布 + `dsh.compatibility`）也没做——注意 `dsh.compatibility` 这个字段
+  **在 DSH 里并不存在**（实测全 asar 零命中），真机制是 `peerDependencies` 的版本区间 +
+  profile 的 `compatibility.json` 例外表，本包现在全是 `"*"`，`0.2.0-rc.2` 下已通过。
 - **面板只在 `nn` 里验证过**：`npm run test:compose` / `test:bundle-runs` 证明真注册表能组合并服务产物，
   起 `nn` 后也核过 `__DSH_BOOT__` 里有本包那一行、三条路由返回预期状态码；但
   **「装进 desktop profile → 重启应用 → 侧栏真的出现图标」这一步还没做过**——

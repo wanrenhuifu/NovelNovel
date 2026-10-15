@@ -137,6 +137,7 @@ assert.deepEqual(toolNames, [
   "novel_lorebook",
   "novel_preset",
   "novel_project",
+  "novel_review",
   "novel_skill",
 ]);
 ok(`${toolNames.length} novel_* tools visible to the model`, toolNames.join(", "));
@@ -1154,6 +1155,326 @@ assert.ok(
   `被取消的章节不该出现在列表里（实际：${cancelledTitles.join(" / ")}）`,
 );
 ok("a write on an already-aborted signal lands nothing");
+
+// ── 章级自检（第 4 步）+ 词条注入治理（第 6 步）──────────────────────
+//
+// 为什么用一个**假 subagents 服务**：真起子 agent 就要调模型，而本仓库的口径是"不调模型也能
+// 证明它对"。假服务验的是我们这一半——传出去的 spec（材料、权限收窄、persona、schema）与拿回来
+// 之后的处理（落盘、连败计数、降级）。真品那一半由 `dsh-subagent` 保证：`allow: []` 不会把
+// 子 agent 自己的 `structured_output` 一起收掉，harness 源码里有明文——限制只作用于**继承来的**
+// 表面，自己这一层注册的东西不受影响（dsh-tools/lib/index.js 的 `view()`）。
+
+step("novel_review");
+const reviewCalls = [];
+let subagentReply = { structured: undefined, output: [] };
+ctx.provide("subagents", {
+  start(provider, request) {
+    reviewCalls.push({ provider, request });
+    return Promise.resolve({
+      id: `sub_${reviewCalls.length}`,
+      result: Promise.resolve(subagentReply),
+      dispose: () => Promise.resolve(),
+    });
+  },
+  list: () => ["spawn", "fork"],
+});
+/** 设下一次子 agent 的返回（structured 优先，output 是纯文本兜底那条路） */
+const replyWith = (structured, output = []) => {
+  subagentReply = { structured, output };
+};
+const replyText = (text) => {
+  subagentReply = { structured: undefined, output: [{ type: "text", text }] };
+};
+await new Promise((resolve) => setTimeout(resolve, 50)); // 等 ctx.inject 的软挂载回调
+
+const readIndex = () => JSON.parse(readFileSync(indexFile, "utf8"));
+
+// **自备一个作品**：前面的 robustness 用例会改写甚至掏空主作品的索引，终态不可依赖。
+// 这样这一节想看什么材料就自己铺什么材料，断言也不受别处顺序影响。
+const reviewGoal = "让林晚在灯楼下承认她早就知道长夜会提前";
+const reviewOutline = "全书梗概：林晚用十年找回被长夜吞掉的灯楼。";
+const reviewProject = (await call("novel_project", { action: "create", title: "自检用例" })).details
+  .project_id;
+const reviewChapter = (await call("novel_chapter", {
+  action: "create",
+  project: reviewProject,
+  title: "第二章 对峙",
+  goal: reviewGoal,
+  text: "灯芯爆了一下。守夜人抬起头，看见城墙上空的夜色比昨夜更浓。",
+})).details.chapter_id;
+const reviewFirst = (await call("novel_chapter", {
+  action: "create",
+  project: reviewProject,
+  title: "第一章 起始",
+  text: "他想起长夜纪年里写过的话：二十年一轮，灯不灭则人不亡。",
+  position: 1,
+})).details.chapter_id;
+await call("novel_lorebook", {
+  action: "add",
+  project: reviewProject,
+  name: "灯火之界",
+  keys: "",
+  content: "城中以灯火为界，灯灭则长夜入城。",
+});
+await call("novel_lorebook", {
+  action: "add",
+  project: reviewProject,
+  name: "长夜纪年",
+  keys: "长夜",
+  content: "长夜纪年记载：二十年一轮，灯不灭则人不亡。",
+});
+await call("novel_project", { action: "update", project: reviewProject, outline: reviewOutline });
+const reviewIndexFile = join(
+  workspace,
+  ".novelnovel",
+  "projects",
+  reviewProject,
+  "chapters",
+  "index.json",
+);
+const reviewIndex = () => JSON.parse(readFileSync(reviewIndexFile, "utf8"));
+const reviewMeta = () => reviewIndex().items.find((item) => item.id === reviewChapter);
+const firstMeta = () => reviewIndex().items.find((item) => item.id === reviewFirst);
+/** 这一节的调用统一带上自备作品，免得受"当前作品"指针影响 */
+const reviewCall = (args) => call("novel_review", { project: reviewProject, ...args });
+const draft = "夜色压下来时，林晚把铜铃按在胸口，一步步走向灯楼。祭司站在门里，没有说话。";
+
+// ① 本地硬门槛先跑：没过就不起子 agent（省一次模型往返）
+const callsBeforeLocal = reviewCalls.length;
+const badLocal = await reviewCall({ chapter: reviewChapter, text: `## 第二章\n${draft}` });
+assert.equal(badLocal.details.verdict, "fail");
+assert.equal(badLocal.details.semantic_check, "local-only");
+assert.equal(reviewCalls.length, callsBeforeLocal, "本地门槛没过时不该起子 agent");
+assert.ok(badLocal.summary.includes("Markdown heading"), "问题要点名是哪一类");
+assert.equal(badLocal.details.attempts, 1, "判不合格要计数");
+assert.equal(reviewMeta().review.attempts, 1, "计数必须落盘（模型自己数记不住）");
+assert.equal(reviewMeta().review.verdict, "fail");
+ok("local gate runs first and skips the sub-agent");
+
+// ② 子 agent 判不合格：问题、计数、**不写摘要**（正文马上要重写，摘要就是假信息）
+replyWith({ verdict: "fail", issues: ["没有推进本章目标", "与上一章的结尾矛盾"] });
+const failedReview = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(failedReview.details.verdict, "fail");
+assert.equal(failedReview.details.semantic_check, "ok");
+assert.equal(failedReview.details.issues.length, 2);
+assert.equal(failedReview.details.attempts, 2);
+assert.equal(failedReview.details.summary_stored, false, "判不合格时不该写摘要");
+assert.equal(reviewMeta().summary, undefined, "摘要字段不该被写进去");
+assert.equal(failedReview.details.reviewed, "draft", "审的是草稿就要如实说");
+
+// 传出去的 spec：材料齐、权限收窄、persona 与 schema 都在
+const spec = reviewCalls.at(-1);
+assert.equal(spec.provider, "spawn", "优先用干净上下文的 spawn");
+assert.deepEqual(spec.request.toolFilter, { allow: [] }, "子 agent 的全局工具必须被收空");
+assert.ok((spec.request.persona ?? "").length > 50, "要有角色说明");
+assert.equal(spec.request.outputSchema.type, "object", "outputSchema 必须是 object 根的标准 JSON Schema");
+assert.ok(spec.request.outputSchema.required.includes("verdict"));
+assert.equal(spec.request.parent.id, "agent_test", "parent 必须是调用方那个活 Agent");
+assert.equal(spec.request.prompt[0].type, "text");
+const material = spec.request.prompt[0].text;
+assert.ok(material.includes(reviewGoal), "本章目标要进材料");
+assert.ok(material.includes(reviewOutline), "全书大纲要进材料");
+assert.ok(material.includes("灯火之界"), "命中词条要进材料");
+assert.ok(
+  material.includes("他想起长夜纪年里写过的话"),
+  `上一章尾部要进材料（实际材料：\n${material}）`,
+);
+
+// schema 用**真品校验器**过一遍：provider 会把 outputSchema 直接注册成子 agent 的
+// `structured_output` 参数，形状不合规会在 `setup()` 里抛错——那会把整条语义自检变成
+// "failed"，而且只在运行期暴露。这里用 harness 自己的 `assertObjectJsonSchema` /
+// `validateJsonSchemaValue` 钉住，比自己再写一遍 JSON Schema 断言可信。
+const dshTools = await load("@deepseek-ai/dsh-tools");
+dshTools.assertObjectJsonSchema(spec.request.outputSchema);
+assert.equal(
+  dshTools.validateJsonSchemaValue(spec.request.outputSchema, {
+    verdict: "pass",
+    issues: [],
+    summary: "x",
+    lore: [{ name: "n", keys: "k", content: "c" }],
+  }).length,
+  0,
+  "合法结论必须通过真品校验",
+);
+assert.ok(
+  dshTools.validateJsonSchemaValue(spec.request.outputSchema, { verdict: "maybe", issues: [] }).length > 0,
+  "乱写的 verdict 要被真品校验拒掉",
+);
+assert.ok(
+  dshTools.validateJsonSchemaValue(spec.request.outputSchema, { verdict: "pass" }).length > 0,
+  "缺 issues 要被真品校验拒掉",
+);
+assert.ok(
+  dshTools.validateJsonSchemaValue(spec.request.outputSchema, { verdict: "pass", issues: [], extra: 1 }).length > 0,
+  "additionalProperties=false 要真的挡住多余字段",
+);
+ok("sub-agent receives goal + outline + lore + previous tail, stripped of every global tool");
+
+// ③ 通过：计数归零、摘要落盘、新设定建议回给前台（**由前台决定要不要写**）
+replyWith({
+  verdict: "pass",
+  issues: [],
+  summary: "林晚在灯楼下与祭司对峙，灯楼第一次亮起。",
+  lore: [{ name: "灯楼", keys: "灯楼", content: "灯楼是城中唯一能压住长夜的建筑。" }],
+});
+const passedReview = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(passedReview.details.verdict, "pass");
+assert.equal(passedReview.details.attempts, 0, "通过要归零");
+assert.equal(passedReview.details.summary_stored, true);
+assert.equal(reviewMeta().summary, "林晚在灯楼下与祭司对峙，灯楼第一次亮起。");
+assert.equal(passedReview.details.lore_suggestions.length, 1, "新设定建议要回给前台");
+assert.ok(passedReview.summary.includes("novel_lorebook action=add"), "要告诉模型建议怎么落地");
+assert.equal(
+  (await call("novel_lorebook", { action: "list", project: reviewProject })).details.entries.some((entry) => entry.name === "灯楼"),
+  false,
+  "自检**不能**自己写词条：写权留在前台",
+);
+ok("a passing review stores the summary and only suggests new settings");
+
+// ④ 坏形状 → inconclusive：不算通过、不加计数、也不清零
+const attemptsBeforeBad = reviewMeta().review.attempts;
+replyWith({ nonsense: true });
+const badShape = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(badShape.details.verdict, "inconclusive");
+assert.equal(badShape.details.semantic_check, "failed");
+assert.equal(badShape.details.attempts, attemptsBeforeBad, "基础服务故障不该改动连败计数");
+assert.equal(reviewMeta().review.verdict, "inconclusive", "数据文件里不能写 pass（那是说谎）");
+assert.ok(badShape.summary.includes("NOT a pass"), "必须明说这不是通过");
+
+// 子 agent 起不来（比如 provider 报错）也走同一条降级路
+subagentReply = { structured: undefined, output: [], stopReason: "error", diagnostic: "provider exploded" };
+const errored = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(errored.details.verdict, "inconclusive");
+assert.ok(errored.summary.includes("provider exploded"), "故障原因要如实带出来");
+
+// ⑤ 纯文本 JSON 兜底：结构化输出没调对时，不该整条链路判失败
+replyText(`我的结论是 {"verdict":"fail","issues":["第二段重复了上一章的收尾"]} 请修改。`);
+const fallback = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(fallback.details.verdict, "fail", "文本兜底解析要能救回来");
+assert.equal(fallback.details.attempts, 1);
+ok("unusable and errored sub-agent runs degrade to inconclusive without touching the counter");
+
+// ⑥ 连败到上限就停：不再建议重写，改为交给作者
+replyWith({ verdict: "fail", issues: ["还是没推进"] });
+const secondFail = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(secondFail.details.attempts, 2);
+assert.equal(secondFail.details.stop, false, "没到上限不该停");
+const thirdFail = await reviewCall({ chapter: reviewChapter, text: draft });
+assert.equal(thirdFail.details.attempts, 3);
+assert.equal(thirdFail.details.stop, true, "默认上限 3：第三次就该停");
+assert.ok(thirdFail.summary.includes("STOP"), "报告里要有明确的停");
+assert.ok(/report the issues\s+above to the author/.test(thirdFail.summary), "要指向人而不是继续重写");
+assert.ok(!thirdFail.summary.includes("Revise the chapter against these issues"), "停下时不该再给重写建议");
+
+// ⑦ local_only：本地过了也只报 inconclusive，且**不动计数**（3 不能被清零）
+const callsBeforeLocalOnly = reviewCalls.length;
+const localOnly = await reviewCall({ chapter: reviewChapter, text: draft, local_only: true });
+assert.equal(localOnly.details.verdict, "inconclusive");
+assert.equal(localOnly.details.semantic_check, "local-only");
+assert.equal(reviewCalls.length, callsBeforeLocalOnly, "local_only 不该起子 agent");
+assert.equal(localOnly.details.attempts, 3, "本地过了不等于这一章合格，计数不能被清掉");
+ok("consecutive failures stop at the limit, and local_only never clears them");
+
+// ⑧ 审已经落盘的正文（不给 text）：材料来自文件，摘要写进那一章
+replyWith({ verdict: "pass", issues: [], summary: "守夜人听见城墙外传来铃声。" });
+const bodyReview = await reviewCall({ chapter: reviewFirst });
+assert.equal(bodyReview.details.reviewed, "chapter body");
+assert.equal(bodyReview.details.verdict, "pass");
+assert.equal(firstMeta().summary, "守夜人听见城墙外传来铃声。");
+ok("reviewing a landed chapter reads its body from disk");
+
+// ── 第 6 步：词条注入的本地治理（排序 + 双上限 + 点名）与可选筛选
+step("lorebook injection limits");
+{
+  const entries = await call("novel_lorebook", { action: "list", project: reviewProject });
+  const longNight = entries.details.entries.find((entry) => entry.name === "长夜纪年");
+  assert.ok(longNight, "示例词条应存在");
+
+  // 可选的语义筛选：只准删。候选池外的 id 要被忽略并点名
+  replyWith({ drop: [longNight.id, "根本不是候选池里的-id"] });
+  const filtered = await call("novel_context", { project: reviewProject, chapter: reviewChapter, instruction: "写夜色", filter: true });
+  const filterSpec = reviewCalls.at(-1);
+  assert.deepEqual(filterSpec.request.toolFilter, { allow: [] }, "筛选子 agent 同样没有全局工具");
+  assert.ok(filterSpec.request.prompt[0].text.includes("长夜纪年"), "候选条目要进筛选材料");
+  assert.ok(!filtered.details.injected_entries.includes("长夜纪年"), "被删掉的条目不该再注入");
+  assert.ok(filtered.summary.includes("not in the candidate list"), "候选池外的 id 要被点名忽略");
+
+  // 筛选失败 → 候选全部保留（漏注入丢设定比多注入更糟）
+  subagentReply = { structured: undefined, output: [], stopReason: "error", diagnostic: "filter down" };
+  const unfiltered = await call("novel_context", { project: reviewProject, chapter: reviewChapter, instruction: "写夜色", filter: true });
+  assert.ok(unfiltered.details.injected_entries.includes("长夜纪年"), "筛选失败要退回本地召回的结果");
+  assert.ok(unfiltered.summary.includes("all candidates kept"), "要说清楚退回了");
+
+  // 条数上限：十个都命中「夜色」的词条，命中的只注入八条，被砍的要**点名**
+  for (let i = 0; i < 10; i++) {
+    await call("novel_lorebook", {
+      action: "add",
+      name: `上限词条${i}`,
+      keys: "夜色",
+      content: `第 ${i} 条设定：夜色里不许点灯。`,
+    });
+  }
+  const capped = await call("novel_context", { project: reviewProject, chapter: reviewChapter, instruction: "写夜色" });
+  const keywordInjected = capped.details.injected_entries.filter((name) => name !== "灯火之界");
+  assert.equal(keywordInjected.length, 8, "命中条目按条数封顶（默认 8）");
+  assert.ok(capped.details.injected_entries.includes("灯火之界"), "常驻条目不占命中额度");
+  assert.ok(capped.summary.includes("always-on (not capped)"), "常驻条目单独说明");
+  assert.ok(capped.details.truncated_entries.length >= 2, "被砍的要如实报出数量");
+  for (const name of capped.details.truncated_entries) {
+    assert.ok(!capped.details.injected_entries.includes(name), `被砍的 ${name} 不该同时出现在注入清单里`);
+  }
+  assert.ok(capped.summary.includes("left out by the injection limits"), "简报里要点名被砍的条目");
+  assert.ok(
+    capped.details.truncated_entries.some((name) => capped.summary.includes(name)),
+    "被砍的条目名字要出现在简报里（只说数量等于没说）",
+  );
+
+  // 相关度排序：命中两个关键词的排在命中一个的前面
+  await call("novel_lorebook", {
+    action: "add",
+    name: "双命中条目",
+    keys: "夜色, 城墙",
+    content: "夜色里的城墙是唯一能叫醒守夜人的东西。",
+  });
+  const ranked = await call("novel_context", { project: reviewProject, chapter: reviewChapter, instruction: "写夜色" });
+  const rankedAt = ranked.details.injected_entries.indexOf("双命中条目");
+  const firstCapped = ranked.details.injected_entries.findIndex((name) => name.startsWith("上限词条"));
+  assert.ok(rankedAt >= 0, "命中两个关键词的条目必须被注入");
+  assert.ok(
+    rankedAt < firstCapped,
+    `命中更多关键词的条目应排在命中一个的前面（双命中在第 ${rankedAt + 1} 位，单命中最早的排在第 ${firstCapped + 1} 位）`,
+  );
+  ok("injection is ranked, capped, and names what it left out");
+}
+
+// ── 没有 subagents 服务时：只跑本地门槛，并且**明说**这不是通过 ──────────
+// 这一条必须在**另一个** Context 里验：本进程那个已经 provide 了假服务，而"服务不在"
+// 正是要验的分支（内核型组合里就没有那一行）。降级成静默"合格"是最坏的失败方式。
+
+step("novel_review without a sub-agent service");
+{
+  const bare = new Context();
+  await bare.plugin(SystemPrompt);
+  await bare.plugin(ToolRuntime);
+  await bare.plugin(LocalFileSystem, { cwd: workspace });
+  await bare.plugin(SkillRegistry);
+  const bareFiber = await bare.plugin(plugin, { dataDir: ".novelnovel" });
+  const bareCall = async (name, args) =>
+    bare.tools.get(name).execute(args, execFor(name, { ...args, project: reviewProject }));
+  const outcome = await bareCall("novel_review", { chapter: reviewChapter });
+  assert.equal(outcome.details.verdict, "inconclusive");
+  assert.equal(outcome.details.semantic_check, "unavailable");
+  assert.ok(outcome.summary.includes("UNAVAILABLE"), "要说清楚语义自检没跑");
+  assert.ok(/NOT a pass/.test(outcome.summary), "必须提醒这不是通过");
+  assert.equal(
+    reviewMeta().review.attempts,
+    3,
+    "没有服务不该改动连败计数（基础设施故障不是这一章写坏了）",
+  );
+  assert.equal(reviewMeta().review.semantic, "unavailable");
+  await bareFiber.dispose();
+  ok("missing sub-agent service degrades to inconclusive instead of a silent pass");
+}
 
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 

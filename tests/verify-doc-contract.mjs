@@ -75,6 +75,8 @@ const promised = {
   novel_preset: ["list", "import", "add", "update", "activate", "deactivate", "remove"],
   novel_skill: ["list", "import", "export", "remove"],
   novel_context: [],
+  // 自检工具没有 action 枚举：它只有 chapter / text / local_only / write_summary
+  novel_review: [],
   novel_export: ["markdown", "text", "backup"],
 };
 

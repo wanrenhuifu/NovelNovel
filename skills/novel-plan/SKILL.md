@@ -59,13 +59,24 @@ When they approve — or once they say "go" — continue with the writing loop b
 
 1. `novel_context chapter=<ref>` — the author's brief: setting, style, keyword-matched
    lorebook entries, participating character cards, the tail of the previous chapters,
-   the tail of this chapter, and this chapter's goal as the task.
+   the tail of this chapter, this chapter's goal as the task, and how many chapters
+   still have no text.
 2. Write the prose in the project's language. Only the story text — no headings,
    notes, summaries or meta commentary inside a chapter.
-3. Land it: `novel_chapter action=append chapter=<ref> text="…"`.
-4. Bookkeeping: new facts the later chapters must respect go in with
+3. Check it: `novel_review chapter=<ref> text=<the draft>` — reviewing the draft before
+   it is landed is the preferred order. `fail` sends you back to step 2 with concrete
+   issues; `STOP` means report to the author instead of rewriting again; `inconclusive`
+   is not a pass.
+4. Land it: `novel_chapter action=append chapter=<ref> text="…"`.
+5. Bookkeeping: new facts the later chapters must respect go in with
    `novel_lorebook action=add name="…" keys="…" content="…"`; tag or rename chapters
    as the story moves (`novel_chapter action=tag`, `action=rename`).
 
 One chapter at a time. After each landing, the next chapter's goal from the outline
-tells you what to brief for.
+tells you what to brief for — and the book is done when `novel_context` /
+`novel_project action=show` reports that every chapter has text.
+
+If the user asked for the whole book in this turn, put the task under a goal
+(`create_goal` with the objective "write all N chapters, each passing `novel_review`")
+so the loop continues across rounds. The goal can only be created in a turn that came
+from the user, so do it now rather than later.
