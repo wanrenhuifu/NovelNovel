@@ -49,7 +49,7 @@ check("解出来的包含 skills/", files.includes("skills"));
 check("解出来的包含 cordis.patch.yml", files.includes("cordis.patch.yml"));
 
 const skillDirs = readdirSync(join(pkgDir, "skills"));
-check("自带技能目录数 = 6", skillDirs.length === 6, skillDirs.sort().join(", "));
+check("自带技能目录数 = 8", skillDirs.length === 8, skillDirs.sort().join(", "));
 
 const manifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
 /*
@@ -100,7 +100,7 @@ await ctx.plugin(plugin);
 await new Promise((resolve) => setTimeout(resolve, 300));
 
 const registered = (await ctx.skills.list()).filter((skill) => skill.name.startsWith("novel"));
-check("从解包副本注册的技能数 = 6", registered.length === 6, registered.map((s) => s.name).sort().join(", "));
+check("从解包副本注册的技能数 = 8", registered.length === 8, registered.map((s) => s.name).sort().join(", "));
 for (const name of [
   "novel-prose",
   "novel-dialogue",
@@ -108,6 +108,8 @@ for (const name of [
   "novel-outline",
   "novel-cards",
   "novel-writing",
+  "novel-plan",
+  "novel-quick",
 ]) {
   check(`技能 ${name} 已注册`, registered.some((skill) => skill.name === name));
 }

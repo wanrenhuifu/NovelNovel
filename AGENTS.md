@@ -10,7 +10,8 @@ agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出
 所以两个产物必须同时构建、装之前必须过 `scripts/test-manifest.mjs`、**开发迭代只装专用 profile（`nn`）**。
 曾经整体砍掉过客户端半边（理由与恢复清单见「坑」第一条），现在是恢复后的状态。
 
-写作方法由技能承载：6 个技能随包注册（rank 250），用户自己的方法用 `novel_skill` 导入到项目根的
+写作方法由技能承载：8 个技能随包注册（rank 250，含两个入口技能 `novel-plan` / `novel-quick`），
+用户自己的方法用 `novel_skill` 导入到项目根的
 `.dsh/skills/`（rank 100，会覆盖同名内置技能）——那是唯一落在 `<dataDir>` 之外的写入。
 
 MIT 许可（`LICENSE`）。分发走 `npm pack` 的 tarball（`prepack` 自动构建）；`package.json` 已处于
@@ -38,7 +39,7 @@ node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘�
 node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
-npm run test:dsh                    # 54 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 56 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives             # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
@@ -108,7 +109,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `tests/verify.mjs` 端到端（54 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（56 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
   `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
@@ -125,7 +126,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `` - `<name>`: <normalized-and-capped-description> ``，**只列 `description`，`whenToUse` 不进提示词**
   （后者只出现在 API 控制器的技能列表里，是给面板/外部消费者用的元数据）。
   所以"中文触发词写在 `whenToUse` 里"曾经等于白写：实测把提示词全组装出来后，
-  `润色`/`改写`/`去 AI 味`/`断章` **一个都没出现**。现在 6 个技能的 `description` 末尾都带
+  `润色`/`改写`/`去 AI 味`/`断章` **一个都没出现**。现在 8 个技能的 `description` 末尾都带
   `中文触发：…`，由 `npm run test:skills` 守着。
   只读类工具声明 `isConcurrencySafe`，会写文件的不要声明。
 - 危险操作（删作品/章节/角色卡/导入的技能）必须 `confirm=true` 才执行，错误信息提示先问用户；

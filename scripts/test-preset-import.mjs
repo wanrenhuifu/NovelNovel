@@ -197,6 +197,45 @@ const withoutPreset = buildSystemPrompt(project, characters, "", null).text;
 check("无预设: 默认开场白", withoutPreset.includes("正在创作长篇小说《长安落雪》"));
 check("无预设: 默认区块齐全", withoutPreset.includes("## 作品简介") && withoutPreset.includes("## 主要角色设定"));
 
+// ---- 7b. 大纲第一层（Push）：非空时必进系统提示词，空 / 缺失时逐字不变 ----
+// 它**无条件附带**：预设的 story_string 管的是文风与设定怎么呈现，全书大纲是这本书的事实
+// （docs/design/auto-writer.md §4 把它归为「不可遗漏」的 Push 层），
+// 所以不能被一个没引用它的模板悄悄丢掉。
+// 注意上面那个 `project` 字面量**没有 outline 键**——它就是旧调用方/老作品的形状，
+// 「空」这一侧的逐字比较都拿它当基准。
+const outlineText = "全书梗概：林晚为了找回被长夜吞掉的十年，必须亲手点亮最后一座灯楼。";
+const outlinePreset = buildSystemPrompt({ ...project, outline: outlineText }, characters, "", preset).text;
+check(
+  "outline: story_string 没引用它时也要带上",
+  outlinePreset.includes(`## 全书大纲\n${outlineText}`),
+);
+const outlineDefault = buildSystemPrompt({ ...project, outline: outlineText }, characters, "", null).text;
+check(
+  "outline: 位置在「作品简介」之后",
+  outlineDefault.indexOf("## 作品简介") < outlineDefault.indexOf("## 全书大纲"),
+);
+check(
+  "outline: 位置在「世界观与背景」之前（全书方向先于局部设定）",
+  outlineDefault.indexOf("## 全书大纲") < outlineDefault.indexOf("## 世界观与背景"),
+);
+check(
+  "outline: 只出现一次（不随预设分支重复）",
+  outlineDefault.split(outlineText).length === 2 && outlinePreset.split(outlineText).length === 2,
+);
+check(
+  "outline 空串: 无预设时与不传逐字相同",
+  buildSystemPrompt({ ...project, outline: "" }, characters, "", null).text === withoutPreset,
+);
+check(
+  "outline 空串: 有预设时与不传逐字相同",
+  buildSystemPrompt({ ...project, outline: "" }, characters, "", preset).text === withPreset,
+);
+check(
+  "outline 只有空白: 等同没有（不产生区块）",
+  buildSystemPrompt({ ...project, outline: "   " }, characters, "", null).text === withoutPreset,
+);
+check("outline 缺失: 输出里没有大纲区块", !withoutPreset.includes("## 全书大纲"));
+
 // ---- 8. buildContinueUserMessage：前文章节块 ----
 // 哨兵稳定性：ChatPanel 依赖空参输出不变来识别续写消息
 check(
@@ -225,6 +264,35 @@ check("空内容前文章节被过滤", !emptyPrevFiltered.includes("空章") &&
 
 const prevNoRecent = buildContinueUserMessage("", "", [{ title: "上一章", text: "结尾。" }]);
 check("有前文无当前正文: 仍携带前文", prevNoRecent.includes("结尾。") && prevNoRecent.includes("请直接续写"));
+
+// ---- 8b. 章级 goal 进指令块（大纲第三层）----
+// goal 搭不上 buildSystemPrompt 的车（那里面收不到章节元数据），必须单独走指令块这条路。
+const goalText = "让林晚在城墙下发现祭司的身份，并埋下旧伤的伏笔";
+const withGoal = buildContinueUserMessage("夜色渐深。", "写对峙", [], goalText);
+check("goal: 出现在指令块里", withGoal.includes(`本章目标：${goalText}`));
+check(
+  "goal: 排在续写要求之前（先定这一章要什么，再定这一轮写什么）",
+  withGoal.indexOf("本章目标：") < withGoal.indexOf("续写要求：写对峙"),
+);
+check("goal: 仍保留当前章节结尾块", withGoal.includes("夜色渐深。"));
+check(
+  "goal: 仍保留前文章节摘录",
+  buildContinueUserMessage("", "", [{ title: "上一章", text: "结尾。" }], goalText).includes("结尾。"),
+);
+
+// 无 goal 必须是**逐字**不变：续写哨兵靠这条识别，老索引（没有 goal 字段）也靠这条照常工作
+const noGoalExplicit = buildContinueUserMessage("夜色渐深。", "写对峙", [], "");
+const noGoalLegacy = buildContinueUserMessage("夜色渐深。", "写对峙");
+check("无 goal: 与旧签名输出逐字相同", noGoalExplicit === noGoalLegacy);
+check("无 goal: 不含目标行", !noGoalExplicit.includes("本章目标"));
+check(
+  "goal 只有空白: 等同没有 goal",
+  buildContinueUserMessage("", "", [], "   ") === buildContinueUserMessage("", ""),
+);
+check(
+  "只有 goal 没有本轮要求: 仍给默认续写指令",
+  buildContinueUserMessage("", "", [], goalText).endsWith("请直接续写接下来的情节。"),
+);
 
 // ---- 9. trimChatHistory：按轮数截断对话 ----
 const roles = (list) => list.map((m) => m.role).join(",");

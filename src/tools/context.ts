@@ -89,6 +89,8 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           {
             title: project.title,
             synopsis: project.synopsis,
+            // 大纲第一层（全书梗概）是 Push：老作品没有这个字段，按空串归一（输出与旧版逐字相同）
+            outline: project.outline ?? "",
             worldbuilding: project.worldbuilding,
             authorNote: project.authorNote,
             lorebook,
@@ -102,7 +104,14 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
           contextText,
           preset,
         );
-        const userMessage = buildContinueUserMessage(recent, args.instruction ?? "", prev);
+        // 章级 goal 进**指令块**而不是系统提示词：buildSystemPrompt 收不到章节元数据
+        // （见 domain/prompt.ts 的 buildContinueUserMessage）。为空时输出与旧版逐字相同。
+        const userMessage = buildContinueUserMessage(
+          recent,
+          args.instruction ?? "",
+          prev,
+          chapter.goal ?? "",
+        );
         const injected = selectLoreEntries(lorebook, contextText);
         const alwaysOn = injected.filter((entry) => !entry.keys.trim());
         const keywordHit = injected.filter((entry) => entry.keys.trim());
@@ -155,6 +164,8 @@ export function registerContextTool({ ctx, store, config, defineTool }: ToolDeps
             chapter_id: chapter.id,
             chapter_title: chapter.title,
             chapter_words: chapter.words,
+            // 没有 goal 的章节（含所有旧索引）如实报 null，不编一个空串出来
+            goal: chapter.goal?.trim() ? chapter.goal.trim() : null,
             preset: preset?.name ?? null,
             system_prompt_chars: systemPrompt.text.length,
             preset_warnings: systemPrompt.warnings,

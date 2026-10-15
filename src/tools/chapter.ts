@@ -13,6 +13,7 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
         "Use action=list for the outline, action=read to load a chapter before editing it,",
         "action=append to land newly written prose at the end of a chapter (the normal path for continuation),",
         "action=write to replace a chapter wholesale, action=create to add a chapter, action=rename/tag/move to keep the outline tidy,",
+        "action=meta to record that chapter's goal (what this chapter must advance — it is injected into the writing brief) and its summary (stored for retrieval, never injected),",
         "action=search to find a phrase across the whole book, action=delete (needs confirm=true) to drop one.",
         "Before writing prose, call novel_context to load the author's brief for that chapter.",
       ),
@@ -20,7 +21,7 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
         action: {
           type: "string",
           required: true,
-          enum: ["list", "read", "create", "append", "write", "rename", "tag", "move", "search", "delete"],
+          enum: ["list", "read", "create", "append", "write", "rename", "tag", "meta", "move", "search", "delete"],
           description: "What to do.",
         },
         project: {
@@ -33,6 +34,18 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
             "Chapter reference: id, 1-based number, or title (exact or unique partial). Required unless action=create/list/search.",
         },
         title: { type: "string", description: "Chapter title (action=create/rename)." },
+        goal: {
+          type: "string",
+          description:
+            "What this chapter must advance, in one sentence (action=meta, optional on action=create). " +
+            "It is put at the head of the instruction block in the novel_context brief. Pass an empty string to clear it.",
+        },
+        summary: {
+          type: "string",
+          description:
+            "What happens in this chapter, for later retrieval (action=meta). Stored only — it is never injected into the brief, " +
+            "because a lossy summary must not displace the real prose. Pass an empty string to clear it.",
+        },
         text: {
           type: "string",
           description: "Prose content: appended with action=append, replacing the chapter with action=write.",
@@ -175,6 +188,7 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
             ...(args.text !== undefined ? { content: args.text } : {}),
             ...(args.tags !== undefined ? { tags: args.tags } : {}),
             ...(args.position !== undefined ? { position: args.position } : {}),
+            ...(args.goal !== undefined ? { goal: args.goal } : {}),
           });
           const chaptersAfter = await store.listChapterMetas(session, projectId);
           // 回显最终序号：position 超界会被夹到末尾，不回显时模型无从发现落点不符
@@ -193,6 +207,7 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
               chapter_id: chapter.id,
               position,
               words: chapter.words,
+              ...(chapter.goal?.trim() ? { goal: chapter.goal.trim() } : {}),
             },
           };
         }
@@ -232,6 +247,37 @@ export function registerChapterTool({ ctx, store, defineTool }: ToolDeps): void 
           throw new Error(`chapter is required for novel_chapter action=${args.action}`);
         }
         const meta = await store.resolveChapterId(session, projectId, args.chapter);
+
+        // 大纲第三层（goal）与每章摘要（summary）的写入口。两者都是可选字段：
+        // 空串按"清空"处理（store.updateChapterMeta 的口径），所以这里只拦"两个都没传"。
+        if (args.action === "meta") {
+          if (args.goal === undefined && args.summary === undefined) {
+            throw new Error(
+              "nothing to update: pass goal and/or summary for novel_chapter action=meta",
+            );
+          }
+          const patched = await store.updateChapterMeta(session, projectId, meta.id, {
+            ...(args.goal !== undefined ? { goal: args.goal } : {}),
+            ...(args.summary !== undefined ? { summary: args.summary } : {}),
+          });
+          const goal = patched.goal?.trim() ? patched.goal.trim() : null;
+          const summary = patched.summary?.trim() ? patched.summary.trim() : null;
+          return {
+            action: args.action,
+            summary: lines(
+              `Updated 「${patched.title}」 [${patched.id}].`,
+              `  goal: ${goal ?? "(none)"}`,
+              `  summary: ${summary === null ? "(none)" : preview(summary, 120)}`,
+            ),
+            details: {
+              project_id: projectId,
+              chapter_id: patched.id,
+              // 空的 goal 如实报 null（与 novel_context 同口径），不编空串
+              goal,
+              summary,
+            },
+          };
+        }
 
         if (args.action === "read") {
           const chapter = await store.readChapter(session, projectId, meta.id);

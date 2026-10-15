@@ -156,7 +156,7 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
   runtime rank 250、`ctx.commands`、`ctx.systemPrompt` —— 均无签名差异。
 - “先读后写”策略的归属判定也没变：`dsh-fs-observation-policy` 仍然从 `actor.agent.session`
   推导 owner，所以插件写入照旧记在调用方会话名下。
-- 端到端：`npm run test:dsh` 49 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
+- 端到端：`npm run test:dsh` 56 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
   schema 都由 harness 校验）。
 
 历史记录（保留，但已不是当前结论）：`0.1.5-rc.1`（npm `latest`，子包 `0.1.5-rc.2`）与
@@ -180,8 +180,8 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 在装了插件的 profile 里开一个会话，直接用自然语言提写作需求即可；系统提示词会引导 agent 使用这些工具：
 | 工具 | 作用 |
 |---|---|
-| `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求）/ 切换当前作品 / 删除 |
-| `novel_chapter` | 章节列表（`from`/`limit` 分页、`verbose=false` 精简）、读取、新建、**追加（写正文的入口）**、覆写、改名、打标签、排序、检索、删除 |
+| `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求、**全书梗概 `outline`**）/ 切换当前作品 / 删除 |
+| `novel_chapter` | 章节列表（`from`/`limit` 分页、`verbose=false` 精简）、读取、新建（可带 `goal`）、**追加（写正文的入口）**、覆写、改名、打标签、**写本章目标与摘要（`meta`）**、排序、检索、删除 |
 | `novel_character` | SillyTavern 角色卡（PNG/JSON，V1/V2/V3）导入、查看、参与开关、再导出 PNG、移除 |
 | `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词=常驻注入） |
 | `novel_preset` | 写作预设导入（SillyTavern JSON）/ 手写 / 编辑 / 激活 / 停用 |
@@ -189,10 +189,12 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 | `novel_context` | **写作前必调**：组装本次的写作简报（系统提示词 + 指令块 + 注入清单 + 参与角色） |
 | `novel_export` | 整书导出 Markdown / TXT，或全量备份 JSON |
 
-另外自带 6 个技能，agent 按需加载（`/novel-prose` 之类的手势也能直接触发）：
+另外自带 8 个技能，agent 按需加载（`/novel-plan` / `/novel-prose` 之类的手势也能直接触发）：
 
 | 技能 | 管什么 |
 |---|---|
+| `novel-plan` | **入口**：先规划后正文。产出三层大纲（全书梗概 / `outline.md` 细纲 / 每章目标），**产出后停下来给人确认** |
+| `novel-quick` | **入口**：跳过大纲直接进入写作循环；适合短篇与没有贯穿性线索（单元剧/日常）的作品 |
 | `novel-writing` | 工具流程与连续性检查（先读简报、写正文、落盘、记设定） |
 | `novel-cards` | 角色卡 / 预设的导入语义与宏规则 |
 | `novel-prose` | 文风与叙述：视角一致性、叙事距离、句式节奏、去 AI 味 |
@@ -202,6 +204,22 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 
 技能是**按需加载**的：模型平时只看得到每个技能的名字和一句描述，判断相关了才把正文拉进上下文。
 所以这些方法平时不占上下文，也不会和你的写作预设打架——需要的时候它们才出现。
+
+### 两个入口技能：`/novel-plan` 与 `/novel-quick`
+
+它们是**技能而不是斜杠命令**，这是有意的：命令处理器不经过模型、只能返回文本，而这两个入口要让
+**模型**去做事（建作品、产大纲、写正文）。技能用 `/名称` 触发时注入的是指令，模型随即行动。
+（反差：`/novel` 是命令，它只打印当前作品状态，不经过模型。）
+
+- `/novel-plan` —— 两阶段的第一阶段：产出三层大纲（`project.outline` 全书梗概——**这一层每章自动进简报**、
+  项目目录里的 `outline.md` 细纲——太长不注入、每章的 `ChapterMeta.goal`——进简报的指令块），
+  **然后停下来给人看**。理由很直接：改大纲只要一条消息，
+  改已经写好的章节要重写它牵动的每一章（以及简报已经让模型保持一致的那些设定）。
+- `/novel-quick` —— 跳过规划，直接进写作循环。判据不是长短而是"这本书有没有需要收束的伏笔/主线/关系弧"；
+  没有就适合走这条，短篇也走这条。
+
+两条路径共用同一个写作循环：`novel_context chapter=<ref>` 取简报 → 写正文 →
+`novel_chapter action=append` 落盘 → 用 `novel_lorebook action=add` 记新设定。
 
 ## 侧栏面板（只读）
 
@@ -273,8 +291,12 @@ novel_skill action=remove name=fast-payoff confirm=true
 novel_context chapter=3 instruction="写林晚在城墙下遇到祭司"   → 拿到简报
 （按简报写正文）
 novel_chapter action=append chapter=3 text="…"                → 落到章节
+novel_chapter action=meta chapter=3 goal="推进祭司线"          → 记下这一章要推进什么（可选）
 novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录新设定
 ```
+
+要写整本书就走两个入口技能之一：`/novel-plan`（先产三层大纲、停下等你确认）或 `/novel-quick`
+（直接进上面的循环）。两者都只是**指令**，真正的动作由模型执行。
 
 `novel_context` 返回的系统提示词区块是设定与文风的权威来源：它就是给模型的 system prompt，
 由 harness 自己的模型来遵守。
@@ -304,10 +326,11 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 <工作目录>/.novelnovel/
   workspace.json                        当前作品
   projects/<projectId>/
-    project.json                        标题 / 简介 / 世界观 / 写作要求
+    project.json                        标题 / 简介 / 世界观 / 写作要求（+ 可选的全书梗概 `outline`，每章进简报）
+    outline.md                          可选：细纲（分卷/分幕、伏笔、关系变化）。**不进简报**，模型按需 `read`
     lorebook.json                       世界观词条
     presets.json                        写作预设与激活项
-    chapters/index.json                 章节元数据（标题、标签、顺序）
+    chapters/index.json                 章节元数据（标题、标签、顺序；+ 可选的 `goal` / `summary`）
     chapters/<chapterId>.md             章节正文（Markdown，可直接用 read/write 工具编辑）
     characters/<id>.json               角色卡（rawData 无损保留）
     characters/<id>.<ext>              原始头像（扩展名与真实媒体类型一致）
@@ -325,6 +348,39 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 只在直接改文件时省一次重读，改过就重算，所以你改完文件再列作品看到的仍然是真实字数。）
 
 技能不放在数据目录里，因为它是整个工作区的写作方法，不属于某部作品——见「装你自己的写作方法」。
+
+### 大纲字段（三层，全部可选）
+
+`project.json` 的 `outline`、`chapters/index.json` 里每章的 `goal` / `summary` 都是**可选字段**：
+老作品缺了它们一切照旧（`novel_context` 只是在没有 outline 时少一段全书大纲、没有 goal 时少一行目标，
+简报其余部分逐字不变）。数据文件本来就是给人手改的，现在也有了工具入口：
+
+```text
+novel_project action=update outline="全书梗概…"        # 大纲第一层；action=show 会回显它
+novel_chapter action=create title="第三章" goal="…"     # 建章时顺手写大纲第三层
+novel_chapter action=meta chapter=3 goal="…" summary="…"   # 之后补写或改写
+```
+
+三层各走各的路（`docs/design/auto-writer.md` §4）：
+
+| 层 | 存哪 | 进简报吗 |
+|---|---|---|
+| 一 · 全书梗概（300–800 字） | `project.json` 的 `outline` | **进**：系统提示词里的独立区块 `## 全书大纲`，每章自动带上（Push，「不可遗漏」） |
+| 二 · 细纲（分卷/分幕、伏笔、关系变化） | 项目目录里的 `outline.md` | **不进**：太长，模型用首方 `read` 工具按需读那一小段（Pull） |
+| 三 · 每章目标（一句话） | `chapters/index.json` 每章的 `goal` | **进**：`novel_context` 放在简报**指令块**最前面（`本章目标：…`），并在 `details.goal` 里回显 |
+
+第一层的区块是**无条件附带**的：它不依赖激活预设的 `story_string` 有没有引用它。
+两者性质不同——预设管的是**文风与设定怎么呈现**，全书大纲是**这本书的事实**，
+不能被一个没引用它的模板悄悄丢掉。第三层走指令块而不是系统提示词，则是因为
+`buildSystemPrompt` 收不到章节元数据。
+
+`outline` / `goal` / `summary` 的清空口径与其它 `update` 字段一致：**传空串就是清空**（不是"没传"），
+清空后简报立刻退回旧形状（不再有 `## 全书大纲` 区块 / `本章目标：` 行），不会留一个空壳。
+`outline.md` 是项目目录里的普通文件——**有意不给工具**：它太长，不该每轮进简报，
+模型需要时用首方 `read` 工具按需读（§4、§8.3）。
+
+`summary` 是唯一没有消费方的字段：**故意不注入提示词**——摘要有损，
+写第 N 章时用它替换原文会悄悄丢掉细节（§3.1），所以只留给检索结果展示。
 
 ## 设计说明
 
@@ -402,7 +458,7 @@ npm run build       # esbuild 打包两个半边：lib/index.js（宿主）+ lib
 npm run typecheck   # tsc -p .（严格模式，零错误）
 npm test            # 8 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 检索 / 排序 / 技能包 / 字数与词条匹配）+ 5 个客户端单测
 npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
-npm run test:dsh    # 端到端验证 54 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
+npm run test:dsh    # 端到端验证 56 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
 npm run test:race   # 并发交错：CAS 真的挡住了吗（单次调用测不出静默覆盖）
 npm run test:edge   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 半成品状态的点名
 npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
@@ -441,7 +497,7 @@ SkillRegistry + observation policy）并驱动全部工具：作品/章节/词�
 （技能包导入→列出→导出→再导入→删除，含手写技能不被覆盖、校验失败不写一半）/命令处理器/配置校验/
 工作区边界与损坏文件容错（坏作品目录、坏角色卡、索引缺失、拒绝覆盖已有文件、追加空白保真、
 `position`/`limit` 边界、同名预设）/观察记录归属/真分发链路（`ctx.tools.execute`：参数校验 + 输出
-schema）/卸载清理/系统提示词段，共 49 项检查，不调用模型。
+schema）/卸载清理/系统提示词段，共 56 项检查，不调用模型。
 `npm test` 是它的快速补充：7 个纯逻辑单测直接测 `src/domain/` 里的解析与组装函数，
 其中「导入 → 改字段 → 导出 → 再导入」专门守着「改了角色卡再导出不会退回旧值」这条。
 

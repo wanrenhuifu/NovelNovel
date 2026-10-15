@@ -7,6 +7,11 @@ import type { LoreEntry, Preset } from "./types";
 export interface PromptProject {
   title: string;
   synopsis: string;
+  /**
+   * 全书梗概（大纲第一层）。与 synopsis 同为必填 string，缺省由调用方 `?? ""` 归一；
+   * 非空时**无条件**进系统提示词（见 buildSystemPrompt）。
+   */
+  outline: string;
   worldbuilding: string;
   authorNote: string;
   lorebook: LoreEntry[];
@@ -208,11 +213,11 @@ const OUTPUT_RULES = [
 ].join("\n");
 
 /**
- * 组装系统提示词：整合世界观、人物设定与写作要求。
+ * 组装系统提示词：整合全书大纲、世界观、人物设定与写作要求。
  * characters 传入已勾选“参与写作”的角色。
  * contextText 用于激活 lorebook 中带关键词的条目（无关键词条目常驻）。
  * preset 激活时：systemPrompt 替换默认开场白（支持 {{char}}/{{user}} 宏），
- * storyString 替换默认的设定区块组装。
+ * storyString 替换默认的设定区块组装；`project.outline` **不受它影响**（见下）。
  *
  * 返回值带 `warnings`：story_string 是「整块替换」，模板引用了某个变量而它是空的时候
  * （最常见的 `{{wiAfter}}`——本应用把词条统一放在 wiBefore），那段设定就**不会**进提示词。
@@ -234,11 +239,29 @@ export function buildSystemPrompt(
     intro ? replaceMacros(intro, charName).trim() : DEFAULT_INTRO(project.title),
   );
 
-  if (preset?.storyString.trim()) {
+  // story_string 是「整块替换设定」，但它**不决定有没有全书大纲**（见下）。
+  // 这里保留原串而不是 trim 结果：renderStoryString 自己会 trim，传入更动的模板没有收益。
+  const storyTemplate = preset?.storyString.trim() ? preset.storyString : "";
+  const outline = (project.outline ?? "").trim();
+
+  if (!storyTemplate && project.synopsis.trim()) {
+    // 作品简介先于全书大纲：全书方向先于局部设定。story_string 路径整块替换设定，没有这一位。
+    sections.push(`## 作品简介\n${project.synopsis.trim()}`);
+  }
+  // 全书大纲（大纲第一层，300–800 字）**无条件附带**：它刻意放在 story_string 的 if / else
+  // **之外**。理由是两者的性质不同——预设的 story_string 管的是**文风与设定怎么呈现**，
+  // 而全书大纲是**这本书的事实**；设计文档把它归为「不可遗漏」的 Push 层
+  // （docs/design/auto-writer.md §4），所以不能被一个没引用它的模板悄悄丢掉。
+  // 为空串（含老作品没有这个字段）时这里什么都不做，输出与旧版逐字相同。
+  if (outline) {
+    sections.push(`## 全书大纲\n${outline}`);
+  }
+
+  if (storyTemplate) {
     const vars = buildStoryVars(project, characters, contextText);
-    sections.push(renderStoryString(preset.storyString, vars));
+    sections.push(renderStoryString(storyTemplate, vars));
     // 模板引用了却没有内容的变量 = 这段设定不会进提示词
-    const empty = [...templateVars(preset.storyString)].filter((name) => {
+    const empty = [...templateVars(storyTemplate)].filter((name) => {
       if (name === "trim" || name === "else") return false;
       return !(vars[name] ?? "").trim();
     });
@@ -250,9 +273,6 @@ export function buildSystemPrompt(
       );
     }
   } else {
-    if (project.synopsis.trim()) {
-      sections.push(`## 作品简介\n${project.synopsis.trim()}`);
-    }
     if (project.worldbuilding.trim()) {
       sections.push(`## 世界观与背景\n${project.worldbuilding.trim()}`);
     }
@@ -293,12 +313,17 @@ function fenceFor(body: string): string {
 /**
  * 续写场景：把前文章节摘录、最近正文与指令拼成一条 user 消息。
  * 前文按传入顺序排列（由远及近），最后才是当前章节结尾。
- * 不带前文时输出与旧版完全一致（CONTINUE_SENTINEL 依赖此稳定性）。
+ *
+ * `chapterGoal` 是本章要推进什么（大纲第三层）：它**必须单独走这条路**——
+ * `buildSystemPrompt` 收不到章节元数据。放在指令块最前，作为"这一轮要写什么"的框架，
+ * 紧跟其后的才是本轮的具体要求。传空串（或缺失）时输出与旧版**逐字相同**
+ * （CONTINUE_SENTINEL 依赖此稳定性）。
  */
 export function buildContinueUserMessage(
   recentText: string,
   instruction: string,
   prevChapters: PrevChapterExcerpt[] = [],
+  chapterGoal = "",
 ): string {
   const lines: string[] = [];
   const prev = prevChapters.filter((c) => c.text.trim());
@@ -317,6 +342,10 @@ export function buildContinueUserMessage(
     lines.push(fence);
     lines.push(text);
     lines.push(fence);
+  }
+  const goal = chapterGoal.trim();
+  if (goal) {
+    lines.push(`本章目标：${goal}`);
   }
   if (instruction.trim()) {
     lines.push(`续写要求：${instruction.trim()}`);

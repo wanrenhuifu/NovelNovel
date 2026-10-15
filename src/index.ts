@@ -2,7 +2,7 @@
  * dsh-novelnovel 插件入口。
  *
  * 一行配置同时挂起：作品/章节/角色卡/世界书/预设的文件存储、8 个 novel_* 工具、
- * 6 个技能、/novel 斜杠命令与一小段系统提示词。
+ * 8 个技能、/novel 斜杠命令与一小段系统提示词。
  * 全部通过 ctx 注册，插件卸载时由 Cordis 自动撤销。
  *
  * **两个半边**：本文件是宿主半边；浏览器半边在 `src/client/`，走 `exports["./client"]`
@@ -131,6 +131,7 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
           "## Novel writing in this workspace",
           `The \`novel_*\` tools manage NovelNovel projects stored in this workspace (data directory \`${config.dataDir}/\`).`,
           "When the user asks to write, continue, revise, outline or export fiction, use them instead of editing the novel files by hand:",
+          "0. Pick the entry point for a whole book: load `novel-plan` to produce the three-level outline and stop for the author's review, or `novel-quick` to skip planning and start the writing loop right away. Short pieces and works without a throughline go straight to `novel-quick`.",
           "1. `novel_project action=show` (or `action=list`) loads the project; `action=create` starts a new novel.",
           "2. `novel_context chapter=<ref>` returns the author's brief for that chapter (worldbuilding, keyword-matched lorebook entries, participating character cards, active preset, previous-chapter excerpts). Treat it as authoritative for setting, characterisation and style.",
           "3. Write the prose, then land it with `novel_chapter action=append` (`action=write` replaces a chapter).",

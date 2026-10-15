@@ -554,7 +554,13 @@ export class NovelStore {
 
   async createProject(
     session: FsSession,
-    input: { title: string; synopsis?: string; worldbuilding?: string; authorNote?: string },
+    input: {
+      title: string;
+      synopsis?: string;
+      worldbuilding?: string;
+      authorNote?: string;
+      outline?: string;
+    },
   ): Promise<NovelProject> {
     const title = input.title.trim();
     if (!title) throw new Error("project title is required");
@@ -566,6 +572,9 @@ export class NovelStore {
       synopsis: input.synopsis?.trim() ?? "",
       worldbuilding: input.worldbuilding?.trim() ?? "",
       authorNote: input.authorNote?.trim() ?? "",
+      // outline 是可选字段：没给（或只给了空白）就**不写这个键**，
+      // 新建的 project.json 与旧版逐字相同——可选字段在数据文件里也要看得见。
+      ...(input.outline?.trim() ? { outline: input.outline.trim() } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -592,7 +601,9 @@ export class NovelStore {
   async updateProject(
     session: FsSession,
     projectId: string,
-    patch: Partial<Pick<NovelProject, "title" | "synopsis" | "worldbuilding" | "authorNote">>,
+    patch: Partial<
+      Pick<NovelProject, "title" | "synopsis" | "worldbuilding" | "authorNote" | "outline">
+    >,
   ): Promise<NovelProject> {
     if (patch.title !== undefined && !patch.title.trim()) {
       throw new Error("project title cannot be empty");
@@ -609,6 +620,10 @@ export class NovelStore {
       if (patch.synopsis !== undefined) project.synopsis = patch.synopsis;
       if (patch.worldbuilding !== undefined) project.worldbuilding = patch.worldbuilding;
       if (patch.authorNote !== undefined) project.authorNote = patch.authorNote;
+      // 与其他字段同一口径：**空串是清空**，不把空串当成"没传"（那样模型永远删不掉大纲）。
+      // 这里不做 trim：`outline` 是可选字段、读侧按 trim 后为空视为没有，所以留一个空串
+      // 与删掉键在语义上等价，但存储形状保持稳定（不必为一个字段再分叉写入路径）。
+      if (patch.outline !== undefined) project.outline = patch.outline;
       project.updatedAt = Date.now();
       await this.ops.writeJson(this.projectFile(projectId), project, session, basis);
       return project;
@@ -1307,7 +1322,7 @@ export class NovelStore {
   async createChapter(
     session: FsSession,
     projectId: string,
-    input: { title: string; content?: string; tags?: string[]; position?: number },
+    input: { title: string; content?: string; tags?: string[]; position?: number; goal?: string },
   ): Promise<Chapter> {
     const title = input.title.trim();
     if (!title) throw new Error("chapter title is required");
@@ -1325,6 +1340,8 @@ export class NovelStore {
         title,
         tags: input.tags ?? [],
         sortOrder: position - 1,
+        // goal 与 outline 同一口径：没给就**不写这个键**（旧形状的索引里看不到新字段）
+        ...(input.goal?.trim() ? { goal: input.goal.trim() } : {}),
         updatedAt: Date.now(),
       });
       index.items = index.items.map((item, i) => ({ ...item, sortOrder: i }));
@@ -1427,7 +1444,14 @@ export class NovelStore {
     session: FsSession,
     projectId: string,
     chapterId: string,
-    patch: { title?: string; tags?: string[]; addTags?: string[]; removeTags?: string[] },
+    patch: {
+      title?: string;
+      tags?: string[];
+      addTags?: string[];
+      removeTags?: string[];
+      goal?: string;
+      summary?: string;
+    },
   ): Promise<ChapterMeta> {
     return this.patchChapter(session, projectId, chapterId, (meta) => {
       if (patch.title !== undefined) {
@@ -1443,6 +1467,11 @@ export class NovelStore {
         const drop = new Set(patch.removeTags);
         meta.tags = meta.tags.filter((tag) => !drop.has(tag));
       }
+      // 大纲第三层/摘要：与其他字段同一口径——**空串是清空**，不当成"没传"。
+      // 两者都是可选字段，读侧（novel_context 的 goal、检索结果的 summary）按 trim 后为空
+      // 视为没有，所以清空后简报立刻退回旧形状，而不是留一行空的"本章目标："。
+      if (patch.goal !== undefined) meta.goal = patch.goal;
+      if (patch.summary !== undefined) meta.summary = patch.summary;
     });
   }
 

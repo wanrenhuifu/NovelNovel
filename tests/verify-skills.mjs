@@ -85,7 +85,7 @@ await ctx.plugin(await load("dsh-novelnovel"));
 await new Promise((resolve) => setTimeout(resolve, 400));
 
 const registered = await ctx.skills.list({ cwd: workspace });
-check("注册出 6 个技能", registered.length === 6, String(registered.length));
+check("注册出 8 个技能", registered.length === 8, String(registered.length));
 
 for (const skill of registered) {
   // 注册出来的 description 必须与磁盘一致——否则"我改了文件但模型看不到"这种事会再发生

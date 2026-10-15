@@ -395,6 +395,8 @@ assert.ok(context.summary.includes("林晚在城墙下遇到祭司"));
 assert.ok(context.summary.includes("守夜人，左眼有一道旧伤"), "预设 systemPrompt 应替换默认开场白");
 assert.equal(context.details.preset, "古风章回体（示例）", "同名重导入后激活的预设仍应生效");
 assert.ok(context.summary.includes("古典章回体"), "预设正文应出现在简报里（内置默认提示词没有这句）");
+// 大纲第一层此时还没写：老作品（project.json 里没有 outline）的简报不该凭空多出大纲区块
+assert.ok(!context.summary.includes("## 全书大纲"), "没有 outline 的老作品不产生大纲区块");
 assert.ok(context.details.prev_chapters.length === 1);
 ok("brief assembled", `preset=${context.details.preset}, injected=${context.details.injected_entries.length} entries, prev=${context.details.prev_chapters.length} chapter`);
 
@@ -404,6 +406,167 @@ assert.ok(!cold.details.injected_entries.includes("长夜纪年"), "关键词不
 assert.ok(cold.details.injected_entries.includes("灯火之界"), "常驻词条仍应注入");
 assert.equal(cold.details.recent_chars, 0, "recent_chars=0 时不应截取整章");
 ok("keyword-scoped injection verified (hit and miss)");
+
+// ── 章级 goal（大纲第三层）：老索引缺字段时一切照旧，写了就必须进简报的指令块
+// goal 搭不上 buildSystemPrompt 的车（那里面收不到章节元数据），只能走指令块这条路；
+// summary 则**故意不注入**（有损摘要不能挤掉原文，见 docs/design/auto-writer.md §3.1）。
+step("chapter goal in the brief");
+{
+  const goalIndexFile = join(
+    workspace,
+    ".novelnovel",
+    "projects",
+    "novel",
+    "chapters",
+    "index.json",
+  );
+  assert.equal(context.details.goal, null, "没有 goal 的老索引应如实报 null");
+  assert.ok(!context.summary.includes("本章目标"), "没有 goal 时简报里不该出现目标行");
+
+  const indexDoc = JSON.parse(readFileSync(goalIndexFile, "utf8"));
+  const goalMeta = indexDoc.items.find((item) => item.title.includes("第二章"));
+  assert.ok(goalMeta, "索引里应有第二章");
+  const goal = "让林晚在城墙下遇到祭司，并让他第一次说出长夜的来历";
+  goalMeta.goal = goal;
+  goalMeta.summary = "本节摘要不该进简报";
+  writeFileSync(goalIndexFile, `${JSON.stringify(indexDoc, null, 2)}\n`, "utf8");
+
+  const goalContext = await call("novel_context", {
+    chapter: "第二章",
+    instruction: "写林晚在城墙下遇到祭司",
+  });
+  assert.equal(goalContext.details.goal, goal, "details 应暴露当前章的 goal");
+  assert.ok(goalContext.summary.includes(`本章目标：${goal}`), "goal 必须进简报的指令块");
+  assert.ok(
+    goalContext.summary.indexOf("本章目标：") < goalContext.summary.indexOf("续写要求："),
+    "goal 是这一章的框架，应排在续写要求之前",
+  );
+  assert.ok(!goalContext.summary.includes("本节摘要不该进简报"), "summary 字段不注入简报");
+
+  const noGoalContext = await call("novel_context", {
+    chapter: "第一章",
+    recent_chars: 0,
+    prev_chapters: 0,
+  });
+  assert.equal(noGoalContext.details.goal, null, "同一本书里没有 goal 的章节仍报 null");
+  assert.ok(!noGoalContext.summary.includes("本章目标"), "没有 goal 的章节不受影响");
+  ok("chapter goal reaches the brief (old indexes still assemble unchanged)");
+}
+
+// ── 大纲的**写入通道**（第二阶段）：outline / goal / summary 现在用工具写得进去
+// 上一段验的是消费侧（手改索引后简报是否照做）；这一段验写入口：工具写 → 落盘 → 立刻被简报读到，
+// 以及"空串 = 清空"（与其他 update 字段同一口径）。没有这一段，"工具说更新了、文件里没有"
+// 这类静默无操作就只能靠手测发现。
+step("outline & chapter meta write channel");
+{
+  const indexFile = join(workspace, ".novelnovel", "projects", "novel", "chapters", "index.json");
+  const projectFile = join(workspace, ".novelnovel", "projects", "novel", "project.json");
+  const outline = "全书梗概：林晚为了找回被长夜吞掉的十年，必须亲手点亮最后一座灯楼。";
+  const outlineUpdate = await call("novel_project", { action: "update", outline });
+  assert.deepEqual(outlineUpdate.details.updated, ["outline"], "只改 outline 时 updated 应只有它");
+  const shown = await call("novel_project", { action: "show" });
+  assert.equal(shown.details.outline, outline, "action=show 应回显 outline");
+  assert.ok(shown.summary.includes(outline), "action=show 的文本里要有 outline");
+  assert.equal(
+    JSON.parse(readFileSync(projectFile, "utf8")).outline,
+    outline,
+    "outline 必须真的落进 project.json",
+  );
+
+  // 大纲第一层是 Push：写进去之后**每一章**的简报都要自动带上（设计文档 §4「不可遗漏」）。
+  // 这个作品此刻激活的是「古风章回体（示例）」——一个**只有 systemPrompt、没有 story_string**
+  // 的预设，所以这一段同时守着"大纲真的进了系统提示词、而不是只躺在 details 里"。
+  const outlineBrief = await call("novel_context", {
+    chapter: "第一章",
+    recent_chars: 0,
+    prev_chapters: 0,
+  });
+  assert.ok(
+    outlineBrief.summary.includes(`## 全书大纲\n${outline}`),
+    "outline 必须作为独立区块进简报的系统提示词",
+  );
+  assert.ok(
+    outlineBrief.summary.indexOf("## 全书大纲") <
+      outlineBrief.summary.indexOf("## Instruction block"),
+    "大纲属于系统提示词部分，应排在指令块之前",
+  );
+  // 另一章同样带上（Push 是"每章"，不是"某一章"）
+  const otherOutlineBrief = await call("novel_context", {
+    chapter: "第二章",
+    recent_chars: 0,
+    prev_chapters: 0,
+  });
+  assert.ok(otherOutlineBrief.summary.includes(`## 全书大纲\n${outline}`), "换一章也要带上 outline");
+
+  const outlineCleared = await call("novel_project", { action: "update", outline: "" });
+  assert.deepEqual(outlineCleared.details.updated, ["outline"], "空串也算「传了参数」");
+  const afterClear = await call("novel_project", { action: "show" });
+  assert.equal(afterClear.details.outline, null, "空串应清空 outline 并如实报 null");
+  assert.ok(!afterClear.summary.includes(outline), "清空后不该再显示大纲");
+
+  // 清空 = 回到老作品形状：简报里不该留空壳区块（逐字退回第一步验过的那个形状）
+  const clearedOutlineBrief = await call("novel_context", {
+    chapter: "第一章",
+    recent_chars: 0,
+    prev_chapters: 0,
+  });
+  assert.ok(!clearedOutlineBrief.summary.includes("## 全书大纲"), "清空 outline 后不该再有区块");
+  assert.ok(!clearedOutlineBrief.summary.includes(outline), "清空后不该再带上旧大纲文本");
+
+  const noFields = await call("novel_project", { action: "update" }).then(
+    () => "成功了（闸没拦住！）",
+    (error) => String(error?.message ?? error),
+  );
+  assert.match(noFields, /outline/, "nothing-to-update 的提示要把 outline 一起列上");
+
+  // 章级 goal / summary 的写入口
+  const metaGoal = "让林晚在灯楼下承认她骗了祭司";
+  const metaSummary = "林晚与祭司对峙，灯楼第一次亮起。";
+  const patched = await call("novel_chapter", {
+    action: "meta",
+    chapter: "第一章",
+    goal: metaGoal,
+    summary: metaSummary,
+  });
+  assert.equal(patched.details.goal, metaGoal);
+  assert.equal(patched.details.summary, metaSummary);
+  const writtenMeta = JSON.parse(readFileSync(indexFile, "utf8")).items.find((item) =>
+    item.title.includes("第一章"),
+  );
+  assert.equal(writtenMeta.goal, metaGoal, "goal 必须真的落进索引");
+  assert.equal(writtenMeta.summary, metaSummary, "summary 必须真的落进索引");
+
+  const metaContext = await call("novel_context", {
+    chapter: "第一章",
+    instruction: "写灯楼下的对峙",
+  });
+  assert.equal(metaContext.details.goal, metaGoal, "工具写的 goal 必须立刻进简报");
+  assert.ok(metaContext.summary.includes(`本章目标：${metaGoal}`), "goal 应进指令块");
+  assert.ok(!metaContext.summary.includes(metaSummary), "summary 写进来也不注入简报");
+
+  // action=create 也收 goal；用一章一次性验证，验完删掉以免影响后面的章节数断言
+  const created = await call("novel_chapter", {
+    action: "create",
+    title: "第三章 过渡",
+    goal: "把林晚送回北境",
+  });
+  assert.equal(created.details.goal, "把林晚送回北境", "action=create 应接受 goal");
+  await call("novel_chapter", { action: "delete", chapter: created.details.chapter_id, confirm: true });
+
+  // 两个参数都不给时明确报错（而不是静默成功）
+  const emptyMeta = await call("novel_chapter", { action: "meta", chapter: "第一章" }).then(
+    () => "成功了（闸没拦住！）",
+    (error) => String(error?.message ?? error),
+  );
+  assert.match(emptyMeta, /goal and\/or summary/, "action=meta 空调用应说明要传什么");
+
+  // 清空 goal 后简报必须退回旧形状（不是留一行空的「本章目标：」）
+  await call("novel_chapter", { action: "meta", chapter: "第一章", goal: "" });
+  const clearedContext = await call("novel_context", { chapter: "第一章" });
+  assert.equal(clearedContext.details.goal, null, "清空 goal 后应报 null");
+  assert.ok(!clearedContext.summary.includes("本章目标"), "清空 goal 后简报不该有目标行");
+  ok("outline / goal / summary are writable through the tools (empty string clears)");
+}
 
 // ── 检索 / 导出
 

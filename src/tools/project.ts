@@ -22,6 +22,9 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
         "Manage novel writing projects (one project = one novel: chapters, character cards, lorebook, writing presets).",
         "Use action=create to start a new novel, action=show to load a project's settings before writing,",
         "action=update to set the worldbuilding / writing requirements that steer the prose,",
+        "or action=update outline= to store the whole-book premise (the top level of the outline, pushed into",
+        "every writing brief as a `## 全书大纲` block; the detailed chapter plan lives in outline.md,",
+        "which is never injected, and each chapter's goal in novel_chapter action=meta),",
         "action=list to see all projects, action=use to switch the current one, action=delete (needs confirm=true) to remove one.",
         "Chapter text lives in novel_chapter; card import in novel_character; setting entries in novel_lorebook.",
       ),
@@ -46,6 +49,13 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
         author_note: {
           type: "string",
           description: "Writing requirements and style notes injected into the writing brief.",
+        },
+        outline: {
+          type: "string",
+          description:
+            "Whole-book synopsis: the top level of the outline (who wants what, what it costs, how it ends), " +
+            "roughly 300-800 characters. It is pushed into every writing brief as a `## 全书大纲` block, " +
+            "with or without a preset, so keep it to the throughline. Pass an empty string to clear it.",
         },
         confirm: {
           type: "boolean",
@@ -97,6 +107,7 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
             ...(args.synopsis !== undefined ? { synopsis: args.synopsis } : {}),
             ...(args.worldbuilding !== undefined ? { worldbuilding: args.worldbuilding } : {}),
             ...(args.author_note !== undefined ? { authorNote: args.author_note } : {}),
+            ...(args.outline !== undefined ? { outline: args.outline } : {}),
           });
           return {
             action: args.action,
@@ -126,10 +137,11 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
           if (args.synopsis !== undefined) patch.synopsis = args.synopsis;
           if (args.worldbuilding !== undefined) patch.worldbuilding = args.worldbuilding;
           if (args.author_note !== undefined) patch.authorNote = args.author_note;
+          if (args.outline !== undefined) patch.outline = args.outline;
           const fields = Object.keys(patch);
           requireFields(
             fields,
-            "nothing to update: pass at least one of title / synopsis / worldbuilding / author_note",
+            "nothing to update: pass at least one of title / synopsis / worldbuilding / author_note / outline",
           );
           const project = await store.updateProject(session, projectId, patch);
           return {
@@ -172,6 +184,7 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
               `lorebook: ${lorebook.length} entries (${lorebook.filter((e) => e.enabled).length} enabled)`,
               `preset: ${activePreset ? activePreset.name : "(built-in default)"}`,
               project.synopsis.trim() ? `\nsynopsis: ${project.synopsis.trim()}` : null,
+              project.outline?.trim() ? `\noutline: ${project.outline.trim()}` : null,
               project.worldbuilding.trim() ? `\nworldbuilding: ${project.worldbuilding.trim()}` : null,
               project.authorNote.trim() ? `\nwriting requirements: ${project.authorNote.trim()}` : null,
             ),
@@ -183,6 +196,8 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
               characters: characters.length,
               lorebook_entries: lorebook.length,
               active_preset: activePreset?.name ?? null,
+              // 没有 outline 的老作品如实报 null，不编一个空串出来（与 novel_context 的 goal 同口径）
+              outline: project.outline?.trim() ? project.outline.trim() : null,
             },
           };
         }

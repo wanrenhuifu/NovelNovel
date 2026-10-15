@@ -82,7 +82,7 @@ const fiber = await ctx.plugin(plugin);
 await new Promise((resolve) => setTimeout(resolve, 300));
 const mounted = await census();
 check("挂载后工具 8 个", mounted.tools.length === 8, String(mounted.tools.length));
-check("挂载后技能 6 个", mounted.skills.length === 6, String(mounted.skills.length));
+check("挂载后技能 8 个", mounted.skills.length === 8, String(mounted.skills.length));
 console.log(`      命令: ${JSON.stringify(mounted.commands)}`);
 
 let disposeError = null;
@@ -123,7 +123,7 @@ console.log("--- 销毁后能干净地重新挂载吗（HMR 的真实路径）--
   );
   const remounted = await census();
   check("重挂后工具仍是 8 个（没有叠加）", remounted.tools.length === 8, String(remounted.tools.length));
-  check("重挂后技能仍是 6 个", remounted.skills.length === 6, String(remounted.skills.length));
+  check("重挂后技能仍是 8 个", remounted.skills.length === 8, String(remounted.skills.length));
 }
 
 rmSync(workspace, { recursive: true, force: true });

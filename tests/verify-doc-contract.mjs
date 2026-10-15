@@ -65,6 +65,7 @@ const promised = {
     "write",
     "rename",
     "tag",
+    "meta",
     "move",
     "search",
     "delete",

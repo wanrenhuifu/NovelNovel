@@ -4,10 +4,10 @@
  * <工作目录>/<dataDir>/                     默认 .novelnovel
  *   workspace.json                          { version, activeProject }
  *   projects/<projectId>/
- *     project.json                          作品元数据
+ *     project.json                          作品元数据（outline 可选）
  *     lorebook.json                         LoreEntry[]
  *     presets.json                          { activePresetId, presets }
- *     chapters/index.json                   { items: ChapterMeta[] }
+ *     chapters/index.json                   { items: ChapterMeta[] }（goal / summary 可选）
  *     chapters/<chapterId>.md               章节正文（Markdown）
  *     characters/<charId>.json              角色卡（rawData 无损保留）
  *     characters/<charId>.png               原始头像（可选）
@@ -25,6 +25,15 @@ export interface NovelProject {
   synopsis: string;
   worldbuilding: string;
   authorNote: string;
+  /**
+   * 全书梗概（大纲第一层）。**可选**：老作品没有这个字段时一切照旧（简报里少一段大纲，其余逐字不变）。
+   *
+   * 写入通道是 `novel_project action=create/update`（`action=show` 回显）。**每章自动带上**：
+   * 按 docs/design/auto-writer.md §4 它是 Push 层（「不可遗漏」），非空时进系统提示词的独立区块
+   * `## 全书大纲`，且**无条件附带**——不吃预设 story_string 的整块替换。第一层只有 300–800 字，
+   * 与第二层 `outline.md` 是两回事：那份细纲太长、不进简报，由模型用首方 read/write 工具按需读。
+   */
+  outline?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -34,6 +43,19 @@ export interface ChapterMeta {
   title: string;
   tags: string[];
   sortOrder: number;
+  /**
+   * 这一章要推进什么（大纲第三层）。**可选**：缺失时简报与旧版逐字一致。
+   *
+   * 它进简报走的是**单独一条通路**（novel_context → buildContinueUserMessage 的指令块），
+   * 而不是系统提示词——`buildSystemPrompt` 收不到章节元数据，搭不上那趟便车。
+   */
+  goal?: string;
+  /**
+   * 每章摘要。**可选**，且**不注入简报**：摘要是有损的，写第 N 章时用前几章摘要替换原文
+   * 会悄悄丢掉细节（docs/design/auto-writer.md §3.1 明确否决了"摘要进简报"）。
+   * 留给检索结果展示用。
+   */
+  summary?: string;
   updatedAt: number;
   /**
    * 字数缓存 + 它对应的正文**字节数**。
