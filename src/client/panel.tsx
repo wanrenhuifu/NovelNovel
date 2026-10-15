@@ -12,7 +12,7 @@
  * - **危险操作二次确认**：删章节 / 删角色卡都要在面板上再点一次"确认删除"。
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Button, IconListPenOutlineRegular, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconListPenOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChapterSummary, ProjectDetail, ReviewSummary } from "./api";
 import { usePanel } from "./state";
 import { useChapterKeys } from "./useChapterKeys";
@@ -224,7 +224,12 @@ function TargetWords({
           setEditing(true);
         }}
       >
-        {target === null ? "设目标字数" : `目标 ${formatWords(target)}（${String(percent)}%）`}
+        {target === null
+          ? "设目标字数"
+          : // 刚开始写的时候「（0%）」只是噪音，百分比有意义了再显示
+            percent !== null && percent > 0
+            ? `目标 ${formatWords(target)}（${String(percent)}%）`
+            : `目标 ${formatWords(target)}`}
       </button>
     );
   }
@@ -436,22 +441,22 @@ function ChapterList({
             >
               <span className="nnv-row-index">{String(index + 1).padStart(2, "0")}</span>
               <span className="nnv-row-main">
-                <span className="nnv-row-title">
-                  {c.title}
+                <span className="nnv-row-title">{c.title}</span>
+                <span className="nnv-row-meta">
+                  <span className="nnv-words">{formatWords(c.words)}</span>
+                  {longest > 0 ? (
+                    <span className="nnv-bar" aria-hidden="true">
+                      <span
+                        className="nnv-bar-fill"
+                        style={{ width: `${String(Math.max(8, Math.round((c.words / longest) * 100)))}%` }}
+                      />
+                    </span>
+                  ) : null}
+                  {/* 角标放第二行：第一行只留给标题。四个行内按钮 + 角标挤同一行时，
+                      中文标题会被压成「第二章 …」（截图里看到过）。 */}
                   {review !== null ? (
                     <span className="nnv-badge" data-verdict={review.verdict}>
                       {reviewLabel(review)}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="nnv-row-meta">
-                  <span>{formatWords(c.words)}</span>
-                  {longest > 0 ? (
-                    <span className="nnv-bar">
-                      <span
-                        className="nnv-bar-fill"
-                        style={{ width: `${String(Math.max(6, Math.round((c.words / longest) * 100)))}%` }}
-                      />
                     </span>
                   ) : null}
                 </span>
@@ -727,55 +732,61 @@ function ChapterView({
   return (
     <>
       <div className="nnv-body-head">
-        <div className="nnv-body-headline">
-          <h1 className="nnv-body-title">{chapter.title}</h1>
-          <span className="nnv-spacer" />
-          {editing ? (
-            <>
-              <Button size="sm" onClick={onReload} disabled={busy}>
-                重新加载
+        <div className="nnv-page">
+          <div className="nnv-body-headline">
+            <h1 className="nnv-body-title">{chapter.title}</h1>
+            <span className="nnv-spacer" />
+            {editing ? (
+              <>
+                <Button size="sm" onClick={onReload} disabled={busy}>
+                  重新加载
+                </Button>
+                <Button size="sm" onClick={onCancelEdit} disabled={busy}>
+                  退出编辑
+                </Button>
+              </>
+            ) : (
+              <Button size="sm" onClick={onEdit}>
+                编辑正文
               </Button>
-              <Button size="sm" onClick={onCancelEdit} disabled={busy}>
-                退出编辑
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" onClick={onEdit}>
-              编辑正文
-            </Button>
-          )}
-        </div>
-        <div className="nnv-chips">
-          {index >= 0 ? <Tag>第 {String(index + 1)} 章</Tag> : null}
-          <Tag>{formatWords(chapter.words)}</Tag>
-          {review !== null ? (
-            <span className="nnv-chip" data-tone={review.verdict === "pass" ? "brand" : "warn"}>
-              {reviewLabel(review)}
-            </span>
-          ) : null}
-          {current !== undefined
-            ? asArray<string>(current.tags).map((t) => <Tag key={t}>{t}</Tag>)
-            : null}
-          {participating.length > 0 ? (
-            <span className="nnv-chip" data-tone="brand">
-              参与写作 {participating.map((c) => c.name).join("、")}
-            </span>
-          ) : null}
-          {matched > 0 ? <span className="nnv-chip">命中 {String(matched)} 条词条</span> : null}
-        </div>
-        {goal !== "" ? <div className="nnv-goal">本章目标：{goal}</div> : null}
-        {editing ? (
-          <div className="nnv-hint nnv-edit-hint">
-            编辑的是磁盘上那份 Markdown 原文。保存时会带上你打开时的版本：
-            如果模型（或另一个窗口）在这期间写过这一章，保存会**失败**并提示你重新加载——不会静默盖掉它。
+            )}
           </div>
-        ) : null}
+          <div className="nnv-chips">
+            {index >= 0 ? <span className="nnv-chip">第 {String(index + 1)} 章</span> : null}
+            <span className="nnv-chip">{formatWords(chapter.words)}</span>
+            {review !== null ? (
+              <span className="nnv-chip" data-tone={review.verdict === "pass" ? "brand" : "warn"}>
+                {reviewLabel(review)}
+              </span>
+            ) : null}
+            {current !== undefined
+              ? asArray<string>(current.tags).map((t) => (
+                  <span className="nnv-chip" key={t}>
+                    {t}
+                  </span>
+                ))
+              : null}
+            {participating.length > 0 ? (
+              <span className="nnv-chip" data-tone="brand">
+                参与写作 {participating.map((c) => c.name).join("、")}
+              </span>
+            ) : null}
+            {matched > 0 ? <span className="nnv-chip">命中 {String(matched)} 条词条</span> : null}
+          </div>
+          {goal !== "" ? <div className="nnv-goal">本章目标：{goal}</div> : null}
+          {editing ? (
+            <div className="nnv-hint nnv-edit-hint">
+              编辑的是磁盘上那份 Markdown 原文。保存时会带上你打开时的版本：如果模型（或另一个窗口）
+              在这期间写过这一章，保存会「失败」并提示你重新加载——不会静默盖掉它。
+            </div>
+          ) : null}
+        </div>
       </div>
       {editing ? (
         <ChapterEditor chapter={chapter} busy={busy} onSave={onSave} />
       ) : (
         <div className="nnv-read">
-          <div className="nnv-prose nnv-fade" key={chapter.id}>
+          <div className="nnv-page nnv-prose nnv-fade" key={chapter.id}>
             {renderProse(chapter.content)}
           </div>
         </div>
@@ -816,32 +827,34 @@ function ChapterEditor({
 
   return (
     <div className="nnv-edit">
-      <textarea
-        className="nnv-textarea"
-        value={draft}
-        spellCheck={false}
-        onChange={(event) => {
-          setDraft((event.target as HTMLTextAreaElement).value);
-        }}
-      />
-      <div className="nnv-edit-actions">
-        <span className="nnv-hint">
-          {dirty ? "有未保存的改动" : "与磁盘一致"}
-          {busy ? " · 保存中…" : ""}
-        </span>
-        <span className="nnv-spacer" />
-        <Button
-          size="sm"
-          disabled={busy || !dirty}
-          onClick={() => {
-            // 守卫写两遍（这里 + `disabled`）：`disabled` 是视觉与语义，但组件库换实现、
-            // 或测试里的 shim 丢掉这个属性时，一次"没改动也保存"的写入仍然会白白改写文件
-            if (busy || !dirty) return;
-            onSave(draft);
+      <div className="nnv-page nnv-edit-inner">
+        <textarea
+          className="nnv-textarea"
+          value={draft}
+          spellCheck={false}
+          onChange={(event) => {
+            setDraft((event.target as HTMLTextAreaElement).value);
           }}
-        >
-          保存
-        </Button>
+        />
+        <div className="nnv-edit-actions">
+          <span className="nnv-hint">
+            {dirty ? "有未保存的改动" : "与磁盘一致"}
+            {busy ? " · 保存中…" : ""}
+          </span>
+          <span className="nnv-spacer" />
+          <Button
+            size="sm"
+            disabled={busy || !dirty}
+            onClick={() => {
+              // 守卫写两遍（这里 + `disabled`）：`disabled` 是视觉与语义，但组件库换实现、
+              // 或测试里的 shim 丢掉这个属性时，一次"没改动也保存"的写入仍然会白白改写文件
+              if (busy || !dirty) return;
+              onSave(draft);
+            }}
+          >
+            保存
+          </Button>
+        </div>
       </div>
     </div>
   );

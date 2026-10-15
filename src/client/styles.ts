@@ -12,6 +12,10 @@
 const STYLE_ID = "dsh-novelnovel-styles";
 
 export const CSS = `
+/* 面板内一律 border-box：.nnv-row 的 width:100% 配上默认的 content-box 会宽出内边距那几像素，
+   于是列表里冒出横向溢出——表现是滚动区底部一条细横线，看着像莫名其妙的分隔线。 */
+.nnv-root, .nnv-root *, .nnv-root *::before, .nnv-root *::after { box-sizing: border-box; }
+
 .nnv-root {
   display: flex;
   flex-direction: column;
@@ -60,28 +64,38 @@ export const CSS = `
 
 /* 左栏：上半章节、下半角色卡（各自滚动）。宽度与分隔线在这里，不在 .nnv-list 上——
    两者共用同一个左栏，谁都不该独占宽度。 */
+/* 声明 304px 就必须是 304px：flex 项的 min-width:auto 会被内容（行内的角标 + 动作按钮）
+   撑开——量出来是 312px，而"我设了宽度却没生效"这种偏差在截图里看不出来。 */
 .nnv-side {
-  flex: 0 0 268px;
+  flex: 0 0 340px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   border-right: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-1);
+  /* 主题里 bg-base / bg-layer-1/2/3 全是 #fff（实测值），只有这个是真正的"面板灰"——
+     外壳自己的侧栏就用它。左栏灰、正文白，才有"导航 vs 纸面"的层次。 */
+  background: var(--dsw-specific-sidebar-fill);
 }
 
+/* 章节列表只占它需要的高度（上限 60%），角色卡区接在下面并**填满剩下的高度**：
+   两段都不长时，空白落在有边框的区块里（像真的侧栏），而不是悬在中间。
+   顺带说明上面那句 background：实测这个主题的 bg-base / bg-layer-1/2/3 全是 #fff，
+   只有 --dsw-specific-sidebar-fill（#f9fafb）是真正的"面板灰"，但对比度只有 2%——
+   所以层次主要还是靠边框与留白，别指望底色。 */
 .nnv-list {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 60%;
+}
+
+.nnv-chars {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-.nnv-chars {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  max-height: 42%;
   border-top: 1px solid var(--dsw-alias-border-l2);
 }
 
@@ -99,7 +113,7 @@ export const CSS = `
 
 .nnv-list-head .nnv-spacer { flex: 1 1 auto; }
 
-.nnv-list-body { flex: 1 1 auto; overflow: auto; padding: 6px 8px 12px; }
+.nnv-list-body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 6px 8px 12px; }
 .nnv-list-empty { display: block; padding: 6px 8px; }
 
 .nnv-row {
@@ -107,7 +121,7 @@ export const CSS = `
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 7px 9px;
+  padding: 7px 8px 7px 9px;
   border: 0;
   border-radius: var(--dsw-radius-sm, 6px);
   background: none;
@@ -124,6 +138,56 @@ export const CSS = `
   box-shadow: inset 2px 0 0 var(--dsw-alias-brand-primary);
 }
 
+.nnv-row-index {
+  flex: 0 0 auto;
+  width: 1.6em;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.nnv-row-main { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
+
+.nnv-row-title {
+  display: block;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nnv-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.nnv-words { flex: 0 0 auto; }
+
+/* 体量条：短、细、有底槽——以前它占满整行且没有轨道，看起来像一条下划线残留。
+   最长的那一章 = 满格（按最长章节归一化，不写死"多少字算长"）。 */
+.nnv-bar {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l1);
+  overflow: hidden;
+}
+
+.nnv-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.nnv-row[data-selected="true"] .nnv-bar-fill { background: var(--dsw-alias-brand-primary); }
+
 /* 行内动作条：默认隐形，悬停/选中该行时才出现——读的时候界面要退到背后 */
 .nnv-row-actions {
   display: flex;
@@ -139,13 +203,13 @@ export const CSS = `
 .nnv-chars .nnv-row:focus-within .nnv-row-actions { opacity: 1; }
 
 .nnv-act {
-  min-width: 22px;
-  height: 22px;
-  padding: 0 5px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
   border: 1px solid transparent;
   border-radius: var(--dsw-radius-xs, 4px);
   background: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary);
   font: inherit;
   font-size: 12px;
   line-height: 1;
@@ -189,16 +253,17 @@ export const CSS = `
 .nnv-input-sm { width: 8em; }
 
 .nnv-check { flex: 0 0 auto; accent-color: var(--dsw-alias-brand-primary); }
-.nnv-row-char { cursor: default; }
+.nnv-row-char { cursor: default; padding-top: 5px; padding-bottom: 5px; }
 .nnv-file { display: none; }
 
-/* 自检结论的小角标：读列表时一眼看出哪几章还没过 */
+/* 自检结论的小角标：靠右、贴齐动作区，不再挤在标题后面 */
 .nnv-badge {
-  margin-left: 6px;
-  padding: 1px 5px;
+  flex: 0 0 auto;
+  padding: 1.5px 6px;
   border-radius: 999px;
   font-size: 10px;
-  vertical-align: 1px;
+  line-height: 1.5;
+  white-space: nowrap;
   color: var(--dsw-alias-label-tertiary);
   border: 1px solid var(--dsw-alias-border-l2);
 }
@@ -213,51 +278,9 @@ export const CSS = `
   border-color: var(--dsw-alias-state-warn-primary);
 }
 
-.nnv-row-index {
-  flex: 0 0 auto;
-  min-width: 1.7em;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.nnv-row-main { flex: 1 1 auto; min-width: 0; }
-
-.nnv-row-title {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.nnv-row-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
-/* 章节体量条：一眼看出哪几章厚 */
-.nnv-bar {
-  position: relative;
-  flex: 1 1 auto;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--dsw-alias-border-l2);
-  overflow: hidden;
-}
-
-.nnv-bar-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--dsw-alias-brand-primary);
-  opacity: 0.55;
-}
-
-.nnv-row[data-selected="true"] .nnv-bar-fill { opacity: 1; }
+/* 注意：.nnv-row* 与 .nnv-bar* 的样式只在上面那一处定义。
+   这里曾经留着第一版的同名规则（.nnv-bar { flex: 1 1 auto } 等），CSS 同权重按顺序取后者，
+   于是改上面那份**看不出任何效果**——量出来才发现行内体量条宽 62px 而不是 34px。 */
 
 /* ── 正文区 ─────────────────────────────────────────────── */
 .nnv-body {
@@ -269,29 +292,42 @@ export const CSS = `
   background: var(--dsw-alias-bg-base);
 }
 
+/* 读的一列：标题、标签、正文、编辑器**共用同一列宽与同一左边缘**。
+   以前标题贴左边、正文自己居中，两者左边缘差几十像素——看起来像没对齐的 bug，而不是排版。
+   宽度用 rem 而不是 em：em 会按各自的 font-size 解析（标题区 14px、正文 15px），
+   于是同一份 42em 算出来 588px 与 600px——又差 12px。 */
+.nnv-page {
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0 30px;
+  box-sizing: border-box;
+}
+
 .nnv-body-head {
   flex: 0 0 auto;
-  padding: 13px 26px 0;
+  padding: 15px 0 0;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
 .nnv-body-headline { display: flex; align-items: center; gap: 8px; }
 .nnv-body-headline .nnv-spacer { flex: 1 1 auto; }
 
-.nnv-body-title { margin: 0; font-size: 1.32em; font-weight: 650; letter-spacing: 0.01em; }
+.nnv-body-title { margin: 0; font-size: 1.28em; font-weight: 650; letter-spacing: 0.01em; }
 
-.nnv-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 11px; }
+.nnv-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 9px 0 11px; }
 
 .nnv-goal {
-  padding: 0 0 10px;
+  padding: 0 0 11px;
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
 }
 
-.nnv-edit-hint { padding: 0 0 10px; }
+.nnv-edit-hint { padding: 0 0 11px; }
 
 /* 目标字数：读状态是一个按钮（点一下进入编辑），编辑态是一行输入 */
 .nnv-target {
+  margin-left: 4px;
   padding: 2px 9px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 999px;
@@ -312,16 +348,16 @@ export const CSS = `
 .nnv-target-edit { display: flex; align-items: center; gap: 5px; }
 
 /* 正文编辑态：textarea 占满剩余高度，等宽字体便于对 Markdown */
-.nnv-edit { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 16px 26px 20px; }
+.nnv-edit { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 18px 0 22px; }
+
+.nnv-edit-inner { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 
 .nnv-textarea {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  max-width: 52em;
-  margin: 0 auto;
   box-sizing: border-box;
-  padding: 14px 16px;
+  padding: 15px 17px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-md, 8px);
   background: var(--dsw-alias-bg-layer-1);
@@ -338,36 +374,37 @@ export const CSS = `
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  max-width: 52em;
-  margin: 10px auto 0;
+  padding-top: 10px;
 }
 
 .nnv-edit-actions .nnv-spacer { flex: 1 1 auto; }
 
+/* 一行里所有标签**同一种形状**：描边胶囊，只有文字颜色按语义分档。
+   以前"第 N 章 / 字数 / 标签"用平台 Tag（灰底实心），"自检结论 / 参与写作"用这里的描边胶囊，
+   两种风格并排放在一行里，看着就是"两种东西拼在一起"。统一之后信息层级靠颜色区分。 */
 .nnv-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px;
+  padding: 1.5px 9px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 999px;
   font-size: 11px;
+  line-height: 1.6;
   color: var(--dsw-alias-label-secondary);
-  background: var(--dsw-alias-bg-layer-2);
+  background: none;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .nnv-chip[data-tone="brand"] {
   color: var(--dsw-alias-brand-primary);
   border-color: var(--dsw-alias-brand-primary);
-  background: transparent;
 }
 
 .nnv-chip[data-tone="warn"] {
   color: var(--dsw-alias-state-warn-primary);
   border-color: var(--dsw-alias-state-warn-primary);
-  background: transparent;
 }
 
 /* 操作成功的提示：与错误同一个位置，但用中性的语气 */

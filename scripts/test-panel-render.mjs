@@ -98,7 +98,12 @@ console.log("--- 正常数据 ---");
   check("顶栏显示章节数与字数", out.html?.includes("2 章") === true && out.html?.includes("万字") === true);
   check("左栏列出章节", out.html?.includes("第一章 灯下") === true);
   check("正文渲染出来", out.html?.includes("雨下了一整夜") === true);
-  check("章节标签渲染成 Tag 组件", out.html?.includes('data-prim="tag"') === true);
+  // 标签以前用平台 Tag（灰底实心），和插件自己的描边胶囊并排时是两种风格——统一成 .nnv-chip 之后
+  // 这一行只该有一种标签形状（截图里对比过：混着放像"两种东西拼在一起"）。
+  check(
+    "章节标签用统一的 .nnv-chip（不再混用平台 Tag）",
+    out.html?.includes('class="nnv-chip"') === true && out.html?.includes('data-prim="tag"') === false,
+  );
   check("刷新按钮渲染（且用 sm 尺寸）", out.html?.includes('data-prim="button"') === true && out.html?.includes('data-size="sm"') === true);
   check("侧栏图标渲染", out.html?.includes('data-prim="icon"') === true);
   check("参与角色被列出", out.html?.includes("林晚") === true);
