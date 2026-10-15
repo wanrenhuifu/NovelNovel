@@ -160,7 +160,7 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
     subagents: () => subagents,
   });
 
-  // Web 面板的只读接口；没有 connection 服务（headless/sdk 组合）时自行跳过
+  // Web 面板的接口（读 + 写）；没有 connection 服务（headless/sdk 组合）时自行跳过
   registerClientApi(ctx, store);
 
   ctx.inject(["skills"], (skillCtx) => {
@@ -170,7 +170,13 @@ export function apply(ctx: Context, rawConfig?: PluginConfig): void {
   });
 
   ctx.inject(["commands"], (commandCtx) => {
-    registerNovelCommand(commandCtx, store);
+    // 注册失败必须留痕：命令在 UI 里"不出现"和"注册失败"用户看到的是同一种现象（输入 /xxx 没反应），
+    // 而 client 那边拿到的是空目录、不会报错。skills 那条同样处理。
+    try {
+      registerNovelCommand(commandCtx, store);
+    } catch (error: unknown) {
+      ctx.logger.warn(`dsh-novelnovel: /novel command unavailable (${(error as Error).message})`);
+    }
   });
 
   ctx.inject(["systemPrompt"], (promptCtx) => {

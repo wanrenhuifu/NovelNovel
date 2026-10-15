@@ -371,6 +371,17 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   ⑤ **一个 path 只注册一次**：`connection.fetch.register` 的 `path` 是精确匹配的键，第二次注册会把
   第一次**覆盖**掉（那样 GET 会神秘消失），所以读写在同一条注册里按 method 分流；
   上传分支按 `content-type` 分流（JSON 的卡也要用非 `application/json` 送过去，那才是"传文件字节"）。
+- **带参数的斜杠命令在 Web 端要按两次回车**（第一次真浏览器验证就抓到这条）：首方
+  `dsh-client-ui-commands/lib/client.js` 的 `matchEnter` 对**声明了 `input`** 的命令返回的是
+  **claim**（"认领这个命令、等参数"），不是执行——`if (desc.input !== void 0) return { claim: … }`。
+  所以 `/novel` 敲完第一次回车只是把输入框变成 `/novel ` 并显示 `input.hint`，**第二次回车才提交**
+  （`/novel` 后打空格再回车等价）。`/novel list` 这种带参写法同样要两次。**别把 `input` 去掉**：
+  没有它时 `matchEnter` 对"带空格的写法"直接 `return void 0`（不认领），`/novel list` 会被当成
+  一句普通 prompt 送给模型。README 的用法一节写明了这个手势。
+  诊断这类问题的手法（可复用）：`.dsh/sessions/<工作区>/<session>/session.v4.jsonl.zstd` 是**逐事件**
+  记录，`zlib.zstdDecompressSync`（Node 24）解开就能看出"输入到底有没有到宿主"——本次就是靠它
+  一句 `isSeeded:false`（只有创建记录）把范围从"命令注册失败"缩小到"前端吞了输入"，
+  再用服务器日志里的注册探针排除掉另一半。
 - **写作预设**：`presetImport.ts` 按字段特征识别裸预设（`content`→system、`story_string`→context、
   `input_sequence`→instruct），含 `context`/`sysprompt`/`instruct` 子对象则当合订信封；reasoning 直接
   拒绝；**声明了字段但内容是空串的裸预设也拒绝**（导入它等于什么都不改，静默成功最误导）。
@@ -438,10 +449,17 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   公开分发形态（npm 发布 + `dsh.compatibility`）也没做——注意 `dsh.compatibility` 这个字段
   **在 DSH 里并不存在**（实测全 asar 零命中），真机制是 `peerDependencies` 的版本区间 +
   profile 的 `compatibility.json` 例外表，本包现在全是 `"*"`，`0.2.0-rc.2` 下已通过。
-- **面板只在 `nn` 里验证过**：`npm run test:compose` / `test:bundle-runs` 证明真注册表能组合并服务产物，
-  起 `nn` 后也核过 `__DSH_BOOT__` 里有本包那一行、三条路由返回预期状态码；但
-  **「装进 desktop profile → 重启应用 → 侧栏真的出现图标」这一步还没做过**——
-  那需要先完全退出应用（`scripts/restore-desktop-bundle.ps1` 就是为这一步写的）。
+- **面板已在真浏览器里跑通（`nn` + `dsh web`），但还没在 `desktop` profile 里过一遍**：
+  实测流程（可复用）：`dsh --profile nn --host 127.0.0.1 --port <p> --no-open`（它会打印**带 token 的 URL**，
+  不带 token 访问只会拿到 401）→ 在会话里跑一次 `novel_*` 工具或 `/novel` 预热工作目录 →
+  侧栏出现 NovelNovel 图标，点开有数据（本次用的是演示工作区：3 章 + 4 张卡 + 3 条词条）。
+  服务端那一半**不带浏览器也能核**：`GET /` 里 `globalThis["__DSH_BOOT__"]` 的本包那一行有 `url` 与 `rev`
+  （宿主自己算好的，**别照 `dsh-novel` 那个探针自己算**——算法对不上），取那个 url 应返回
+  `window.__ModuleLoader__.load({ id: "dsh-novelnovel", … })`，且与 `lib/client.js` **逐字节一致**
+  （只多一行宿主的 `sourceMappingURL`）；`dsh --profile nn --dump-config` 可核宿主半边在组合里
+  （`# == dsh-novelnovel`）。这几条以后每次改客户端半边都值得重跑一遍。
+  **剩下没做的**：`desktop` profile（装进去 → 完全重启应用 → 侧栏出现，`scripts/restore-desktop-bundle.ps1`
+  就是为它写的），以及真机观感——比如行内按钮是"悬停/选中才出现"，触屏上的手感没验过。
 
 ## 参考
 
