@@ -1,17 +1,17 @@
 /**
- * Web 路由的真实请求测试：驱动 `/api/novel.*` 三条只读路由，断言**状态码与 JSON 结构**。
+ * Web 路由的真实请求测试：驱动 `/api/novel.*` 的读写路由，断言**状态码与 JSON 结构**。
  *
- * 为什么需要：这层是面板与数据之间的唯一通道，而它的两处逻辑**从没被测过**——
- * (1) 错误码映射（我把它从"message 正则"改成"按 code 映射"，改的就是这里）；
- * (2) 未注册工作区时的 403 分支。
- * 映射错了用户看到的解释就是错的（比如把"章节名有歧义、请指明"报成 500 内部错误）。
+ * 为什么需要：这层是面板与数据之间的唯一通道。三条只读路由当年从没被测过，而错误码映射
+ * （从"message 正则"改成"按 code 映射"）与 403 分支都只在这里能验。现在多了写路由，
+ * 于是又多了四件只在这一层存在的事：同源校验、`expectedContent` 的内容级 CAS、
+ * 危险操作的确认闸、以及"写请求也要过 cwd 白名单"。
  *
  * 手法：真 `NovelStore` + 真 fs + 一个假的 `connection.fetch` 注册表（只收集路由），
  * 然后**构造真 Request 调过去**，检查真 Response。
  *
  * 必须用 DSH 自带的 Electron Node 运行。
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -73,9 +73,23 @@ ctx.sandboxPolicy.resolve = () => ({ mode: "danger-full-access", workspaceRoot: 
 await ctx.plugin(await load("dsh-novelnovel"));
 await new Promise((resolve) => setTimeout(resolve, 200));
 
-check("三条路由都注册了", routes.size === 3, [...routes.keys()].join(", "));
-for (const path of ["/api/novel.projects", "/api/novel.project", "/api/novel.chapter"]) {
+check("四条路由都注册了", routes.size === 4, [...routes.keys()].join(", "));
+for (const path of [
+  "/api/novel.projects",
+  "/api/novel.project",
+  "/api/novel.chapter",
+  "/api/novel.character",
+]) {
   check(`路由 ${path} 存在`, routes.has(path));
+}
+{
+  // 读写共用同一个 path（第二次 register 会覆盖第一次，那样 GET 会神秘消失）——这里钉住
+  const chapterRoute = routes.get("/api/novel.chapter");
+  check(
+    "同一 path 上读写都声明了（不会被覆盖掉一个）",
+    chapterRoute.methods.includes("GET") && chapterRoute.methods.includes("POST"),
+    chapterRoute.methods.join("/"),
+  );
 }
 
 /** 调一条路由，返回 { status, body } */
@@ -91,6 +105,71 @@ async function hit(path, params = {}) {
     body = undefined;
   }
   return { status: response.status, body };
+}
+
+/**
+ * 发一条**写**请求。
+ *
+ * `body` 是字符串/字节时原样送（角色卡上传走这条），否则按 JSON 序列化。
+ * `headers` 用来构造跨站/跨源的请求——同源校验只看请求头，这是唯一能验它的方式。
+ */
+async function send(path, params = {}, body = {}, headers = {}) {
+  const route = routes.get(path);
+  const url = new URL(`http://localhost${path}`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const raw = typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body);
+  const response = await route.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...headers,
+      },
+      body: raw,
+    }),
+  );
+  let parsed;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = undefined;
+  }
+  return { status: response.status, body: parsed };
+}
+
+/**
+ * 构造一个"像 Request 一样"的最小对象。
+ *
+ * 为什么需要：`Origin` 是 Fetch 规范里的 **forbidden header name**，Node 的 `new Request(…, {headers})`
+ * 会把它悄悄丢掉——想验"跨源请求被拒"就只能自己造一个。它读的只有
+ * `method` / `url` / `headers.get` / `text()` / `arrayBuffer()` 这几样。
+ */
+function fakeRequest({ method = "POST", url, headers = {}, body = "" }) {
+  const lowered = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+  return {
+    method,
+    url,
+    headers: { get: (name) => lowered.get(name.toLowerCase()) ?? null },
+    text: async () => body,
+    arrayBuffer: async () => new TextEncoder().encode(body).buffer,
+  };
+}
+
+/** 用假 Request 发一条写请求（只在需要构造 forbidden header 时用） */
+async function sendFake(path, params, body, headers) {
+  const route = routes.get(path);
+  const url = new URL(`http://localhost${path}`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const response = await route.fetch(
+    fakeRequest({ url: url.href, headers, body: JSON.stringify(body) }),
+  );
+  let parsed;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = undefined;
+  }
+  return { status: response.status, body: parsed };
 }
 
 // ── 先造数据：走工具（与真实用法一致）──────────────────────────────
@@ -210,6 +289,293 @@ console.log("--- 坏数据也要回 JSON ---");
     JSON.stringify(broken.body).slice(0, 120),
   );
   writeFileSync(indexPath, backup, "utf8");
+}
+
+// ── 写路由：章节的增 / 改 / 存 / 排 / 删 ────────────────────────────
+console.log("--- 写路由：章节 ---");
+const chapterFileOf = (id) =>
+  join(workspace, ".novelnovel", "projects", projectId, "chapters", `${id}.md`);
+{
+  const made = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "create", title: "第三章 面板新建" },
+  );
+  check("新建章节 → 201", made.status === 201, `${String(made.status)} ${String(made.body?.error?.code ?? "")}`);
+  const id = made.body?.data?.chapter?.id;
+  check("新建返回章节 id", typeof id === "string", String(id));
+
+  // 保存：内容相等才写（面板把"读到的那份"回传当基准）
+  const read = await hit("/api/novel.chapter", { chapter: id, project: projectId });
+  const loaded = read.body?.data?.chapter?.content;
+  const saved = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "write", chapter: id, content: "面板写下的正文", expectedContent: loaded },
+  );
+  check("保存正文 → 200", saved.status === 200, `${String(saved.status)} ${String(saved.body?.error?.message ?? "")}`);
+  check("保存真的落盘", readFileSync(chapterFileOf(id), "utf8") === "面板写下的正文");
+  check("保存回传新的字数", typeof saved.body?.data?.words === "number", String(saved.body?.data?.words));
+
+  // 冲突：仍拿**旧**内容当基准再存 → 409，且磁盘不动
+  const conflict = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "write", chapter: id, content: "第二次覆盖", expectedContent: loaded },
+  );
+  check(
+    "基准对不上 → 409 stale（不是静默覆盖）",
+    conflict.status === 409 && conflict.body?.error?.code === "stale",
+    `${String(conflict.status)} ${String(conflict.body?.error?.code ?? "")}`,
+  );
+  check("冲突时磁盘上的正文没变", readFileSync(chapterFileOf(id), "utf8") === "面板写下的正文");
+  check(
+    "冲突文案说得清是「谁改的」",
+    /changed while you were editing/.test(String(conflict.body?.error?.message)),
+    String(conflict.body?.error?.message).slice(0, 90),
+  );
+
+  // 不给基准 → 400：面板不许"盲写"
+  const noBase = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "write", chapter: id, content: "x" },
+  );
+  check("不带 expectedContent → 400（不给盲写的机会）", noBase.status === 400, String(noBase.status));
+
+  const renamed = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "rename", chapter: id, title: "第三章 改过名" },
+  );
+  check(
+    "改名 → 200 且落盘",
+    renamed.status === 200 &&
+      JSON.parse(readFileSync(join(workspace, ".novelnovel", "projects", projectId, "chapters", "index.json"), "utf8")).items.some(
+        (item) => item.id === id && item.title === "第三章 改过名",
+      ),
+    String(renamed.status),
+  );
+
+  const moved = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "move", chapter: id, direction: "up" },
+  );
+  check("上移 → 200", moved.status === 200, String(moved.status));
+  // 一直上移到头：那时必须报 at_edge，而不是"静默什么都没发生"
+  let edge = null;
+  for (let i = 0; i < 12 && edge === null; i++) {
+    const attempt = await send(
+      "/api/novel.chapter",
+      { project: projectId },
+      { action: "move", chapter: id, direction: "up" },
+    );
+    if (attempt.status !== 200) edge = attempt;
+  }
+  check(
+    "移到头了再上移 → 409 at_edge（不是静默无事发生）",
+    edge?.status === 409 && edge?.body?.error?.code === "at_edge",
+    `${String(edge?.status)} ${String(edge?.body?.error?.code ?? "(一直 200，没到头)")}`,
+  );
+
+  const noConfirm = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "delete", chapter: id },
+  );
+  check(
+    "删除不带 confirm → 400 且文件还在",
+    noConfirm.status === 400 && existsSync(chapterFileOf(id)),
+    `${String(noConfirm.status)} ${String(noConfirm.body?.error?.code ?? "")}`,
+  );
+  const deleted = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "delete", chapter: id, confirm: true },
+  );
+  check("带 confirm 才真删（文件也没了）", deleted.status === 200 && !existsSync(chapterFileOf(id)), String(deleted.status));
+
+  const unknown = await send("/api/novel.chapter", { project: projectId }, { action: "nope" });
+  check("未知 action → 400", unknown.status === 400, String(unknown.status));
+}
+
+// ── 写路由：全书目标字数 ───────────────────────────────────────────
+console.log("--- 写路由：目标字数 ---");
+{
+  const set = await send(
+    "/api/novel.project",
+    { project: projectId },
+    { action: "set-target-words", targetWords: 120000 },
+  );
+  check("设置目标字数 → 200", set.status === 200, String(set.status));
+  const detail = await hit("/api/novel.project", { project: projectId });
+  check("详情里能读到目标字数", detail.body?.data?.project?.targetWords === 120000, String(detail.body?.data?.project?.targetWords));
+  const list = await hit("/api/novel.projects");
+  check(
+    "作品列表也带上目标字数（面板顶栏用它算百分比）",
+    list.body?.data?.projects?.[0]?.targetWords === 120000,
+    String(list.body?.data?.projects?.[0]?.targetWords),
+  );
+  const cleared = await send(
+    "/api/novel.project",
+    { project: projectId },
+    { action: "set-target-words", targetWords: null },
+  );
+  check("传 null 清空 → 字段从 project.json 里消失", cleared.status === 200 && cleared.body?.data?.targetWords === null, JSON.stringify(cleared.body?.data));
+  const after = JSON.parse(readFileSync(join(workspace, ".novelnovel", "projects", projectId, "project.json"), "utf8"));
+  check("清空后文件里真的没有这个键", after.targetWords === undefined, JSON.stringify(after).slice(0, 120));
+  const bad = await send(
+    "/api/novel.project",
+    { project: projectId },
+    { action: "set-target-words", targetWords: "abc" },
+  );
+  check("非数字 → 400", bad.status === 400, String(bad.status));
+  const negative = await send(
+    "/api/novel.project",
+    { project: projectId },
+    { action: "set-target-words", targetWords: -5 },
+  );
+  check("负数 → 400（store 的归一化挡住）", negative.status === 400, `${String(negative.status)} ${String(negative.body?.error?.message ?? "")}`);
+}
+
+// ── 写路由：角色卡（上传 / 参与开关 / 删除）────────────────────────
+console.log("--- 写路由：角色卡 ---");
+{
+  // 上传分支按 content-type 分流：JSON 的卡也要用非 application/json 送（那是"文件字节"）
+  const card = {
+    spec: "chara_card_v2",
+    data: {
+      name: "路由卡",
+      description: "守夜人，左眼有一道旧伤。",
+      personality: "寡言",
+      scenario: "",
+      first_mes: "",
+      mes_example: "",
+      creator_notes: "",
+      character_book: {
+        entries: [
+          { name: "灯规", keys: ["灯"], content: "灯灭则长夜入城。", enabled: true },
+        ],
+      },
+    },
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(card));
+  const imported = await send(
+    "/api/novel.character",
+    { project: projectId, filename: "路由卡.json" },
+    bytes,
+    { "content-type": "application/octet-stream" },
+  );
+  check(
+    "上传角色卡 → 201",
+    imported.status === 201,
+    `${String(imported.status)} ${String(imported.body?.error?.message ?? "")}`,
+  );
+  check("导入回传解析出的名字", imported.body?.data?.character?.name === "路由卡", JSON.stringify(imported.body?.data?.character));
+  check("卡内世界书并入项目 lorebook", imported.body?.data?.mergedLoreEntries === 1, String(imported.body?.data?.mergedLoreEntries));
+
+  const detail = await hit("/api/novel.project", { project: projectId });
+  const cardId = detail.body?.data?.characters?.[0]?.id;
+  check("详情里能看到这张卡", typeof cardId === "string", String(cardId));
+
+  const off = await send(
+    "/api/novel.character",
+    { project: projectId },
+    { action: "set-active", character: cardId, active: false },
+  );
+  check("关掉参与 → 200 且回传 false", off.status === 200 && off.body?.data?.active === false, JSON.stringify(off.body?.data));
+
+  const noConfirm = await send(
+    "/api/novel.character",
+    { project: projectId },
+    { action: "delete", character: cardId },
+  );
+  check("删卡不带 confirm → 400", noConfirm.status === 400, `${String(noConfirm.status)} ${String(noConfirm.body?.error?.code ?? "")}`);
+  const gone = await send(
+    "/api/novel.character",
+    { project: projectId },
+    { action: "delete", character: cardId, confirm: true },
+  );
+  check("删卡带 confirm → 200", gone.status === 200, String(gone.status));
+  const after = await hit("/api/novel.project", { project: projectId });
+  check("删完列表里没有它了", after.body?.data?.characters.length === 0, String(after.body?.data?.characters.length));
+
+  const empty = await send(
+    "/api/novel.character",
+    { project: projectId, filename: "空.png" },
+    new Uint8Array(0),
+    { "content-type": "image/png" },
+  );
+  check("空上传 → 400", empty.status === 400, String(empty.status));
+}
+
+// ── 写路由：同源校验与工作区白名单 ─────────────────────────────────
+console.log("--- 写路由：安全 ---");
+{
+  const crossSite = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "create", title: "跨站建的章" },
+    { "sec-fetch-site": "cross-site" },
+  );
+  check(
+    "跨站写请求 → 403 cross_origin",
+    crossSite.status === 403 && crossSite.body?.error?.code === "cross_origin",
+    `${String(crossSite.status)} ${String(crossSite.body?.error?.code ?? "")}`,
+  );
+  const listed = await hit("/api/novel.project", { project: projectId });
+  check(
+    "被拒的写请求什么都没落地",
+    !listed.body?.data?.chapters.some((c) => c.title === "跨站建的章"),
+    listed.body?.data?.chapters.map((c) => c.title).join(", "),
+  );
+
+  const otherOrigin = await sendFake(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "create", title: "别的源建的章" },
+    { origin: "http://evil.example" },
+  );
+  check(
+    "Origin 指向别的站点 → 403",
+    otherOrigin.status === 403 && otherOrigin.body?.error?.code === "cross_origin",
+    `${String(otherOrigin.status)} ${String(otherOrigin.body?.error?.code ?? "")}`,
+  );
+
+  const ownOrigin = await sendFake(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "create", title: "同源建的章" },
+    { origin: "http://localhost" },
+  );
+  check("Origin 与本机一致 → 放行 201", ownOrigin.status === 201, String(ownOrigin.status));
+
+  const sameOrigin = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "create", title: "带 Sec-Fetch-Site 的同源请求" },
+    { "sec-fetch-site": "same-origin" },
+  );
+  check("Sec-Fetch-Site: same-origin → 放行 201", sameOrigin.status === 201, String(sameOrigin.status));
+
+  const badWorkspace = await send(
+    "/api/novel.chapter",
+    { cwd: "Z:\\definitely-not-a-workspace" },
+    { action: "create", title: "不该建出来" },
+  );
+  check(
+    "写路由同样走 cwd 白名单 → 403 unknown_workspace",
+    badWorkspace.status === 403 && badWorkspace.body?.error?.code === "unknown_workspace",
+    `${String(badWorkspace.status)} ${String(badWorkspace.body?.error?.code ?? "")}`,
+  );
+
+  const badBody = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    "这不是 JSON",
+  );
+  check("坏 body → 400（不是 500）", badBody.status === 400, String(badBody.status));
 }
 
 rmSync(workspace, { recursive: true, force: true });

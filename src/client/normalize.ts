@@ -9,7 +9,13 @@
  *
  * 纯函数、不碰 DOM，所以能直接用 node 测。
  */
-import type { ChapterDetail, ChapterSummary, LoreEntrySummary, ProjectDetail } from "./api";
+import type {
+  ChapterDetail,
+  ChapterSummary,
+  LoreEntrySummary,
+  ProjectDetail,
+  ReviewSummary,
+} from "./api";
 
 /** 落盘 JSON 里实际可能是任何东西 */
 type Loose = Record<string, unknown>;
@@ -34,6 +40,24 @@ function asArray(value: unknown): Loose[] {
   return Array.isArray(value) ? value.filter((v): v is Loose => typeof v === "object" && v !== null) : [];
 }
 
+/**
+ * 自检结语（`ChapterMeta.review`）：形状不认识就当"没有结论"（null），
+ * 而不是把一个乱值塞进渲染——面板上它只会变成一个标签，但 `.verdict` 是枚举，
+ * 塞进去会让标签显示出 undefined。
+ */
+function asReview(value: unknown): ReviewSummary | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Loose;
+  const verdict = raw.verdict;
+  if (verdict !== "pass" && verdict !== "fail" && verdict !== "inconclusive") return null;
+  return { verdict, attempts: asNumber(raw.attempts) };
+}
+
+/** 目标字数：非正数 / 非数字都按"没设"处理（与宿主侧 `targetWords` 的缺失语义一致） */
+function asTargetWords(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
 export function normalizeChapters(value: unknown): ChapterSummary[] {
   return asArray(value).map((raw) => ({
     id: asString(raw.id),
@@ -41,6 +65,7 @@ export function normalizeChapters(value: unknown): ChapterSummary[] {
     tags: asStringArray(raw.tags),
     words: asNumber(raw.words),
     updatedAt: asNumber(raw.updatedAt),
+    review: asReview(raw.review),
   }));
 }
 
@@ -58,6 +83,7 @@ export function normalizeChapter(value: unknown): ChapterDetail["chapter"] | nul
   return {
     ...normalizeChapters([raw])[0]!,
     content: asString(raw.content),
+    goal: asString(raw.goal),
   };
 }
 
@@ -86,6 +112,7 @@ export function normalizeDetail(value: unknown): ProjectDetail | null {
       title: asString(p.title, "（无标题）"),
       synopsis: asString(p.synopsis),
       updatedAt: asNumber(p.updatedAt),
+      targetWords: asTargetWords(p.targetWords),
     },
     chapters: normalizeChapters(raw.chapters),
     characters: asArray(raw.characters).map((c) => ({

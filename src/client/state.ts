@@ -15,7 +15,11 @@ import { normalizeChapter, normalizeDetail } from "./normalize";
 export interface PanelState {
   loading: boolean;
   chapterLoading: boolean;
+  /** 有写请求在飞：按钮禁用、显示"保存中…" */
+  busy: boolean;
   error: string | null;
+  /** 上一次操作的结果（成功也报，不然用户不知道点了有没有用） */
+  notice: string | null;
   projects: ProjectSummary[];
   unreadable: { id: string; error: string }[];
   activeId: string | null;
@@ -25,11 +29,44 @@ export interface PanelState {
   chapterId: string | null;
 }
 
+/**
+ * 面板能做的事。写操作全部**先请求后重取**（不做乐观更新）：
+ * 面板改的是模型正在写的同一份稿子，本地先改再对齐，一旦冲突就会出现"屏幕上是对的一版、
+ * 磁盘上是另一版"的状态——那是这个面板最不该有的东西。代价是一次多余的网络往返。
+ */
 export interface PanelActions {
   refresh(): void;
   selectProject(id: string): void;
   selectChapter(id: string): void;
+  /** 保存当前章节正文（`content` 是编辑器里的全文） */
+  saveChapter(content: string): void;
+  createChapter(title: string): void;
+  renameChapter(id: string, title: string): void;
+  /** 删除章节；确认对话框在面板侧，点了才会调到这里 */
+  deleteChapter(id: string): void;
+  moveChapter(id: string, direction: "up" | "down"): void;
+  /** 全书目标字数；`null` = 清掉目标 */
+  setTargetWords(words: number | null): void;
+  /** 从本机选一个 PNG/JSON 角色卡导入（走上传，不经过文件工具） */
+  importCharacter(file: File): void;
+  setCharacterActive(id: string, active: boolean): void;
+  deleteCharacter(id: string): void;
 }
+
+const NO_ACTIONS: PanelActions = {
+  refresh: () => undefined,
+  selectProject: () => undefined,
+  selectChapter: () => undefined,
+  saveChapter: () => undefined,
+  createChapter: () => undefined,
+  renameChapter: () => undefined,
+  deleteChapter: () => undefined,
+  moveChapter: () => undefined,
+  setTargetWords: () => undefined,
+  importCharacter: () => undefined,
+  setCharacterActive: () => undefined,
+  deleteCharacter: () => undefined,
+};
 
 /**
  * 初始状态：**状态的单一真相**。
@@ -38,7 +75,9 @@ export interface PanelActions {
 export const INITIAL: PanelState = {
   loading: true,
   chapterLoading: false,
+  busy: false,
   error: null,
+  notice: null,
   projects: [],
   unreadable: [],
   activeId: null,
@@ -49,7 +88,7 @@ export const INITIAL: PanelState = {
 
 export const PanelContext = React.createContext<{ state: PanelState; actions: PanelActions }>({
   state: INITIAL,
-  actions: { refresh: () => undefined, selectProject: () => undefined, selectChapter: () => undefined },
+  actions: NO_ACTIONS,
 });
 
 export function usePanel(): { state: PanelState; actions: PanelActions } {
@@ -89,9 +128,20 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
    * 切作品是「立刻改 id + 异步取详情」，闭包里的值会滞后。见 selectChapter。
    */
   const activeIdRef = React.useRef<string | null>(null);
+  /** 同理：写操作之后要"停在当前这一章"重取，闭包里的 chapterId 可能已经过期 */
+  const chapterIdRef = React.useRef<string | null>(null);
+  /**
+   * **加载进来时的那份正文**：保存时作为"我基于哪一版改的"比对基准交给宿主。
+   * 必须是它而不是编辑器里的草稿——草稿是"我要写成什么"，基准是"我看到的是什么"。
+   */
+  const loadedContentRef = React.useRef<string | null>(null);
+  /** 刚新建的章节 id：重取时要选中它（不然点了"新建"却看不到在编辑什么） */
+  const createdChapterRef = React.useRef<string | null>(null);
 
   const patch = React.useCallback((next: Partial<PanelState>) => {
     if (next.activeId !== undefined) activeIdRef.current = next.activeId;
+    if (next.chapterId !== undefined) chapterIdRef.current = next.chapterId;
+    if (next.chapter !== undefined) loadedContentRef.current = next.chapter?.content ?? null;
     setState((prev) => ({ ...prev, ...next }));
   }, []);
 
@@ -179,6 +229,40 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
     };
   }, [load]);
 
+  /**
+   * 写操作的统一跑法：置忙 → 请求 → **重取** → 报结果。
+   *
+   * 不做乐观更新（见 `PanelActions` 的说明）。失败时**保留用户输入**：只把可读的原因放进
+   * `error`，编辑器里的草稿一个字都不动——冲突时用户最需要的是"我写的东西还在"。
+   */
+  const run = React.useCallback(
+    (operation: () => Promise<string>, keep: "project" | "chapter" | "created") => {
+      patch({ busy: true, error: null, notice: null });
+      void (async () => {
+        try {
+          const message = await operation();
+          const projectId = activeIdRef.current;
+          const base = projectId === null ? {} : { projectId };
+          if (keep === "project") {
+            // 删掉当前章节后不能再按章节重取（那一章已经不存在），回到作品级
+            load(projectId === null ? undefined : base);
+          } else if (keep === "created") {
+            const created = createdChapterRef.current;
+            createdChapterRef.current = null;
+            load(created === null ? base : { ...base, chapterId: created });
+          } else {
+            const chapterId = chapterIdRef.current;
+            load(chapterId === null ? base : { ...base, chapterId });
+          }
+          patch({ busy: false, notice: message });
+        } catch (error) {
+          patch({ busy: false, error: describe(error), notice: null });
+        }
+      })();
+    },
+    [load, patch],
+  );
+
   const actions = React.useMemo<PanelActions>(
     () => ({
       refresh: () => load(state.activeId === null ? undefined : { projectId: state.activeId }),
@@ -209,8 +293,108 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
           }
         })();
       },
+
+      saveChapter: (content: string) => {
+        const projectId = activeIdRef.current;
+        const chapterId = chapterIdRef.current;
+        // "我基于哪一版改的"就是**加载进来时那份正文**（不是编辑器里的草稿）：
+        // 宿主侧拿它做内容比对，对不上就是 409
+        const expected = loadedContentRef.current;
+        if (projectId === null || chapterId === null || expected === null) return;
+        run(
+          () =>
+            api
+              .saveChapter(undefined, projectId, chapterId, content, expected)
+              .then((saved) => `已保存（${String(saved.words)} 字）`),
+          "chapter",
+        );
+      },
+
+      createChapter: (title: string) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(
+          () =>
+            api.createChapter(undefined, projectId, title).then((created) => {
+              // 新建的章节要立刻选中它，否则用户点了"新建"却看不到自己在编辑什么
+              createdChapterRef.current = created.chapter.id;
+              return `已新建「${created.chapter.title}」`;
+            }),
+          "created",
+        );
+      },
+
+      renameChapter: (id: string, title: string) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(() => api.renameChapter(undefined, projectId, id, title).then(() => "已改名"), "chapter");
+      },
+
+      deleteChapter: (id: string) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        // 删掉的是"当前这一章"时不能按 chapter 重取（那一章已经不存在了），回到作品级
+        run(() => api.deleteChapter(undefined, projectId, id).then(() => "已删除"), "project");
+      },
+
+      moveChapter: (id: string, direction: "up" | "down") => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(
+          () =>
+            api
+              .moveChapter(undefined, projectId, id, direction)
+              .then(() => (direction === "up" ? "已上移" : "已下移")),
+          "chapter",
+        );
+      },
+
+      setTargetWords: (words: number | null) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(
+          () =>
+            api.setTargetWords(undefined, projectId, words).then((saved) =>
+              saved.targetWords === null ? "已清除目标字数" : `目标字数已设为 ${String(saved.targetWords)} 字`,
+            ),
+          "chapter",
+        );
+      },
+
+      importCharacter: (file: File) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(
+          () =>
+            api.importCharacter(undefined, projectId, file).then((imported) => {
+              const lore =
+                imported.mergedLoreEntries > 0 ? `，并入 ${String(imported.mergedLoreEntries)} 条词条` : "";
+              const note = imported.avatarNote === undefined ? "" : `（${imported.avatarNote}）`;
+              return `已导入「${imported.character.name}」${lore}${note}`;
+            }),
+          "chapter",
+        );
+      },
+
+      setCharacterActive: (id: string, active: boolean) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(
+          () =>
+            api
+              .setCharacterActive(undefined, projectId, id, active)
+              .then(() => (active ? "已让这张卡参与写作" : "已让这张卡退出写作")),
+          "chapter",
+        );
+      },
+
+      deleteCharacter: (id: string) => {
+        const projectId = activeIdRef.current;
+        if (projectId === null) return;
+        run(() => api.deleteCharacter(undefined, projectId, id).then(() => "已删除角色卡"), "chapter");
+      },
     }),
-    [load, patch, state.activeId],
+    [load, patch, run, state.activeId],
   );
 
   return { state, actions };
@@ -220,6 +404,24 @@ function describe(error: unknown): string {
   if (error instanceof ApiFailure) {
     if (error.code === "unknown_workspace") {
       return "尚未确定工作目录：请先在本会话里让模型调用任意 novel_* 工具（或用 /novel），再点刷新。";
+    }
+    if (error.code === "stale") {
+      return "这一章在你编辑期间被改过了（模型或另一个窗口写过它）。你改的内容**没有保存**——请点「重新加载」拿到最新正文，再在最新的一版上重做改动。";
+    }
+    if (error.code === "cross_origin") {
+      return "写请求被拒绝：它看起来不是从这个页面发出去的。刷新页面后重试。";
+    }
+    if (error.code === "needs_confirm") {
+      return "这个操作需要先确认（面板上的确认没有生效？）。";
+    }
+    if (error.code === "too_large") {
+      return "文件太大了（角色卡上限 8 MB）。";
+    }
+    if (error.code === "no_chapters") {
+      return "这本还没有章节：先新建一章。";
+    }
+    if (error.code === "at_edge") {
+      return "这一章已经在头/尾了。";
     }
     return error.message;
   }

@@ -982,6 +982,65 @@ const otherIntent = await ctx.waterfall(
 assert.equal(otherIntent.kind, "createIfAbsent", "未观察过该文件的会话不应拿到版本校验意图");
 ok("plugin writes are recorded in the read-before-write gate for the calling session");
 
+// ── 面板写入也要记账（写路由没有 exec，但 actor 能从白名单里那个真 Session 造出来）────
+// 这条以前是"已知例外"：HTTP 路由没有 exec → `fs/observed` 不带 actor → 策略看不到 →
+// 模型随后用首方 write/edit 会被要求"先读一遍"（写入明明刚发生过）。现在
+// `NovelStore.writeWorkspaceOf` 用白名单里的真 Session 构造 actor（策略取 owner 的方式是
+// `actor?.agent?.session`），所以面板写入与工具写入走的是同一条记账路径。
+step("panel writes are recorded too");
+{
+  const panelRoutes = new Map();
+  ctx.provide("connection", {
+    fetch: {
+      register(route) {
+        panelRoutes.set(route.path, route);
+        return Promise.resolve();
+      },
+    },
+  });
+  // 软挂载：connection 是 provide 之后回调才跑的（插件 apply 时它还不存在）
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(panelRoutes.size, 4, "三条读 + 一条角色卡（读写共用 path）");
+  for (const path of ["/api/novel.projects", "/api/novel.project", "/api/novel.chapter", "/api/novel.character"]) {
+    assert.ok(panelRoutes.has(path), `${path} 应注册`);
+  }
+
+  const route = panelRoutes.get("/api/novel.chapter");
+  const target = `http://localhost/api/novel.chapter?project=novel`;
+  // 先让 **stableExec** 用一次工作区：白名单里存的是"最后一次记住的那个真 Session 对象"，
+  // 而这个用例后面要拿 stableExec 去问策略——不先固定住，别处插一次 call() 就会换掉它
+  await callWith(stableExec, "novel_project", { action: "show", project: "novel" });
+  const readBack = await route.fetch(new Request(`${target}&chapter=${observedWrite.details.chapter_id}`));
+  const current = (await readBack.json()).data.chapter.content;
+
+  const written = await route.fetch(
+    new Request(target, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "write",
+        chapter: observedWrite.details.chapter_id,
+        content: "面板改过的一行。",
+        expectedContent: current,
+      }),
+    }),
+  );
+  assert.equal(written.status, 200, `面板写正文应成功（实际 ${String(written.status)}）`);
+
+  const panelIntent = await ctx.waterfall(
+    "fs/write-intent",
+    chapterTarget,
+    stableExec,
+    () => undefined,
+  );
+  assert.equal(
+    panelIntent.kind,
+    "replaceIfVersion",
+    "面板写入必须记在那个真会话名下，否则模型之后会被要求先读一遍",
+  );
+  ok("panel writes are recorded in the read-before-write gate");
+}
+
 // ── 真分发链路：参数校验 + 输出校验都由 harness 执行（上面所有检查都绕过了它）
 
 step("dispatch through ctx.tools.execute");

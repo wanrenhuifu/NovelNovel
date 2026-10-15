@@ -5,8 +5,8 @@ agent 直接用 `novel_*` 工具写作、导卡、维护设定、检索、导出
 harness 提供的能力：正文由当前会话写，`novel_review` 的语义自检走 `ctx.subagents` 委派一个一次性
 子 agent），数据落 `<工作目录>/<dataDir>/`。领域逻辑集中在 `src/domain/`。
 
-**两个半边都做**：宿主半边是 Node 侧的工具/技能/命令/系统提示词段 + 3 条只读 `/api/novel.*` 路由；
-客户端半边是 Web 侧栏的只读面板（作品 / 章节 / 正文）。客户端半边是 **fail-closed** 的
+**两个半边都做**：宿主半边是 Node 侧的工具/技能/命令/系统提示词段 + 4 条 `/api/novel.*` 路由（读 + 写）；
+客户端半边是 Web 侧栏的**读写**面板（作品 / 章节 / 正文 / 角色卡 / 目标字数）。客户端半边是 **fail-closed** 的
 （`dsh.client` 一旦声明，`exports["./client"]` 指向的产物读不到就让**所有**客户端插件一起加载不出来），
 所以两个产物必须同时构建、装之前必须过 `scripts/test-manifest.mjs`、**开发迭代只装专用 profile（`nn`）**。
 曾经整体砍掉过客户端半边（理由与恢复清单见「坑」第一条），现在是恢复后的状态。
@@ -41,12 +41,12 @@ node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘�
 node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
-npm run test:dsh                    # 64 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 65 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives             # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
 npm run test:tokens                 # 面板用的 CSS 变量必须在首方产物里存在
-npm run test:routes                 # Web 路由：真实请求打过来，状态码与错误分级（含不泄露绝对路径）
+npm run test:routes                 # Web 路由（读+写）：状态码、错误分级、内容级 CAS、同源校验、不泄露绝对路径
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
 npm run test:chapter-guard          # 真实 fs 语义：章节 id 不能当路径段（越界 id 读不到别的作品）
 npm run test:race                   # 并发交错：CAS 真的挡住了吗（用 fs 钩子构造交错，CAS 正确性只能这样证明）
@@ -92,13 +92,16 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `src/skillStore.ts` 管**项目级**技能文件（项目根 `.dsh/skills/` 的列出/导入/导出/删除，加载仍由
   harness 负责，不新增技能机制）；`src/fsx.ts` 封装 `ctx.fs`（解析/读写/目录/删除/二进制）与会话构造；
   `src/types.ts` 落盘结构。
-- `src/clientApi.ts` 宿主侧给面板的 3 条只读接口（`/api/novel.projects` / `novel.project` /
-  `novel.chapter`，**path 精确匹配**、无鉴权——鉴权归 connection 的 fence）。
-  存 `NovelStore.workspaces`（cwd → **真 Session 对象**）与 `workspaceOf` / `knownWorkspaces`
-  也在这个用途上：HTTP 路由没有会话上下文，cwd 只能由前端告知并**按白名单校验**。
+- `src/clientApi.ts` 宿主侧给面板的接口（读 + 写）：`/api/novel.projects` / `novel.project` /
+  `novel.chapter`（GET 读 + POST 写，**path 精确匹配**、读写共用一个 path 靠 method 分流）与
+  `/api/novel.character`（只有 POST：上传字节导入 / 参与开关 / 删除）。鉴权仍归 connection 的 fence，
+  写请求**另加一道同源校验**（`crossOrigin`）。
+  存 `NovelStore.workspaces`（cwd → **真 Session 对象**）与 `workspaceOf` / `writeWorkspaceOf`
+  也在这个用途上：HTTP 路由没有会话上下文，cwd 只能由前端告知并**按白名单校验**；
+  `writeWorkspaceOf` 比读多带一个 `actor`（见「坑」里面板写入记账那条）。
 - `src/client/**` 浏览器半边（React）：`index.tsx` 是插件入口（`apply(ctx)` + `inject = ["slots"]`
   + 错误边界）、`panel.tsx` 面板视图、`state.ts` store 与归一化、`normalize.ts` 坏形状兜底、
-  `api.ts` 请求拼装/响应解析、`useChapterKeys.ts` 键盘导航、`styles.ts` 面板 CSS、`env.d.ts` 手写类型声明。
+  `api.ts` 请求拼装/响应解析（读写两套）、`useChapterKeys.ts` 键盘导航、`styles.ts` 面板 CSS、`env.d.ts` 手写类型声明。
   两个插槽：`sidebar.panellist`（图标）与 `main`（面板，`key` 与侧栏 `id` 必须一致——那是两者唯一的联系）。
 - `src/tools/<name>.ts` 一个工具一个文件，`src/tools/index.ts` 注册；`src/tools/shared.ts` 放统一输出
   形状（`TEXT_OUTPUT`/`textRender`）、`lines`/`preview`/`requireFields` 与 `ToolDeps`
@@ -112,11 +115,11 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `cardImport.ts`（角色卡解析 + 世界书提取）、`presetImport.ts`、`prompt.ts`（系统提示词组装、宏替换、
   词条注入与**注入治理**：`rankLoreEntries` 的相关度排序 + 条数/字符双上限、续写消息拼装）、
   `review.ts`（自检的硬门槛、子 agent 提示词、结论归一化）、`loreFilter.ts`（候选池筛选的提示词与
-  **只准删**的归一化）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
+  **只准删**的归一化）、`progress.ts`（"已写 / 目标"字数的展示口径，三处共用）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `tests/verify.mjs` 端到端（64 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（65 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
   `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
@@ -353,6 +356,21 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   写 `pass` 而其实没做语义检查等于在数据文件里说谎，所以数据里也如实记 `inconclusive`。
   连败到 `maxReviewAttempts` 就**不再建议重写**（报告里 `STOP` 并让模型交给作者）——
   这是 §2.2 的口径：停下来的条件是"正文写不出来"，所以重写必须有次数上限，而"模型自己数"记不住。
+- **面板写入的五条口径**（客户端半边从只读改成能写之后新增的，每条都有测试钉着）：
+  ① **记账**：HTTP 路由没有 exec，但「先读后写」策略取 owner 的方式是 `actor?.agent?.session`
+  （`dsh-fs-observation-policy/lib/index.js:29`），所以 `NovelStore.writeWorkspaceOf` 用白名单里
+  **当初那个真 Session 对象**现造一个 `{ agent: { session } }` 当 actor——面板写入因此与工具写入走
+  同一条记账路径，模型之后可以直接写、不需要先读一遍。**别**退回"面板是例外"那种口径。
+  ② **保存用内容级 CAS**：`ctx.fs` 的版本是不透明对象，要经 HTTP 序列化再送回来不值当；面板把它
+  **加载时读到的那份文本**回传，`writeChapterBodyIfUnchanged` 先比对、再用**同一次读**的 basis 写入
+  ——两层都成立，冲突时 409、磁盘不动、草稿留在编辑器里。
+  ③ **同源校验的两个比较方向都写反过一次**：`site !== "cross-site"` 与 `host === host` 让
+  "同源被拒、跨站放行"，正好反过来。现在 `npm run test:routes` 两个方向都有用例——改 `crossOrigin` 前先看那两条。
+  ④ **`Origin` 是 Fetch 规范的 forbidden header**：Node 里 `new Request(…, { headers: { origin } })`
+  会把它悄悄丢掉（`sec-fetch-site` 反而留得住），所以测"跨源被拒"只能自己造一个像 Request 的对象。
+  ⑤ **一个 path 只注册一次**：`connection.fetch.register` 的 `path` 是精确匹配的键，第二次注册会把
+  第一次**覆盖**掉（那样 GET 会神秘消失），所以读写在同一条注册里按 method 分流；
+  上传分支按 `content-type` 分流（JSON 的卡也要用非 `application/json` 送过去，那才是"传文件字节"）。
 - **写作预设**：`presetImport.ts` 按字段特征识别裸预设（`content`→system、`story_string`→context、
   `input_sequence`→instruct），含 `context`/`sysprompt`/`instruct` 子对象则当合订信封；reasoning 直接
   拒绝；**声明了字段但内容是空串的裸预设也拒绝**（导入它等于什么都不改，静默成功最误导）。
@@ -404,10 +422,10 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   （`ChapterMeta.wordsCache`，一次 `listDir` 拿全目录大小），不再读遍全书：实测 300 章
   从 923/929 次 `ctx.fs` 调用降到 15/29 次。`novel_chapter action=list` **不走缓存**，
   它按 README 的承诺重新读文件。
-- **面板是只读的（有意，不是缺口）**：写操作要与模型抢同一份稿子，得先设计冲突 UX 并复用 CAS 语义。
-  下一期做「能改卡」时有个**必须单独验**的洞：写路径需要 `actor` 才能 `emit('fs/observed')`，
-  而 HTTP 路由**没有 exec**——观测策略不会记录这些写入，于是首方 `write`/`edit` 之后会被要求先读一遍。
-  别想当然地照搬工具的写路径。会话里要看状态用 `/novel`（不经过模型）或 `novel_project action=show`。
+- **面板还没做的**：项目设定（简介 / 世界观 / 写作要求 / 大纲 / 标题）没有面板入口——目前只有
+  **全书目标字数**能改；角色卡头像只显示"有 / 没有"，不渲染图片；lorebook（词条）没有面板；
+  面板**不自动刷新**（模型写完不会跳提示，点「刷新」或重开面板；`connection/reset` 会重取）。
+  这几条 README 的「还没做（面板侧）」里有对应说明，改到附近时顺手评估。
 - **从未跑过真实模型会话**：全部验证都在工具层，不调模型——技能路由、简报实际 token 量、
   模型会不会滥用 `action=write` 都还没有证据。**自检那条链路只证到了插件这一半**：
   `npm run test:dsh` 用一个假 `subagents` 服务验"我们传出去什么、拿回来怎么处理"，

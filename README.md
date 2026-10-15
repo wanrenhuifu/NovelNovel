@@ -3,7 +3,7 @@
 用工作区里的**普通文件**写小说：agent 直接用 `novel_*` 工具建作品、写正文、导角色卡、维护世界观词条、
 检索与导出，**续写由 harness 的模型承担**，插件负责把作者的设定（世界观 / 命中词条 / 参与角色 /
 写作预设 / 前文摘录）组装成写作简报交给它；方法层面的东西（文风、对话、节奏、结构）由自带的技能承载，
-也可以导入你自己的。另外带一个**侧栏只读面板**，把作品 / 章节 / 正文按读一本书的样子显示出来。
+也可以导入你自己的。另外带一个**侧栏面板**：读起来像一本书，也能在面板上改章节正文、导入角色卡、设目标字数。
 
 本仓库就是插件包（`dsh.bundle.patch` → `cordis.patch.yml`，向 profile 插入一行 `id: novelnovel`）。
 领域逻辑（角色卡解析、预设解析、技能包解析、提示词组装、词条关键词匹配、章节排序、全文搜索、
@@ -180,7 +180,7 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 在装了插件的 profile 里开一个会话，直接用自然语言提写作需求即可；系统提示词会引导 agent 使用这些工具：
 | 工具 | 作用 |
 |---|---|
-| `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求、**全书梗概 `outline`**）/ 切换当前作品 / 删除 |
+| `novel_project` | 作品的新建 / 列表 / 详情 / 改设定（简介、世界观、写作要求、**全书梗概 `outline`**、**全书目标字数 `target_words`**）/ 切换当前作品 / 删除 |
 | `novel_chapter` | 章节列表（`from`/`limit` 分页、`verbose=false` 精简）、读取、新建（可带 `goal`）、**追加（写正文的入口）**、覆写、改名、打标签、**写本章目标与摘要（`meta`）**、排序、检索、删除 |
 | `novel_character` | SillyTavern 角色卡（PNG/JSON，V1/V2/V3）导入、查看、参与开关、再导出 PNG、移除 |
 | `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词=常驻注入） |
@@ -270,25 +270,58 @@ create_goal objective="写完《长夜将至》全部 24 章，每章都要过 n
 `create_goal` 只在**真人开口的那一轮**可用（harness 的硬闸），所以技能会要求在收到请求的那一轮
 就把目标打上，而不是等到后面。
 
-## 侧栏面板（只读）
+## 侧栏面板（读 + 写）
 
 Web 界面（`web` / `desktop` / 任何带 Web 面的 profile）的侧栏会多一个 NovelNovel 图标，
 点开是当前作品的**章节列表 + 正文**，按读一本书的样子排版：行宽行距按中文小说调过，
-章节行带体量条（按最长章节归一化，不写死"多少字算长"），正文区显示参与写作的角色与命中的词条数。
+章节行带体量条（按最长章节归一化，不写死"多少字算长"），正文区显示参与写作的角色、命中的词条数
+与每章的**自检结论**（通过 / 未过 ×N / 未判定）。
 
-**只读是有意的**：写操作要与模型抢同一份稿子，得先设计冲突 UX 并复用 CAS 语义。
-第一期先把"看得见"这件事做对。
+**能改的都在这里**（早期版本只读，现在写操作都补齐了）：
 
-数据来自插件自己的 3 条只读路由（`/api/novel.projects` / `novel.project` / `novel.chapter`），
-读的是工作区里**同一份** `.novelnovel/` 文件——面板上看到的就是模型正在写的那份。
+| 位置 | 能做什么 |
+|---|---|
+| 章节列表 | 新建 / 改名 / 上移下移 / 删除（要二次确认） |
+| 正文区 | 「编辑正文」→ 直接改 Markdown 原文 → 保存；草稿未保存时会提示 |
+| 角色卡（左栏下半） | 导入本机的 PNG / JSON 卡（≤ 8 MB）、勾选「参与写作」、删除（二次确认） |
+| 顶栏 | 设置**全书目标字数**，显示「已写 / 目标（百分比）」 |
 
-两条容易误判成故障的行为：
+### 与模型抢同一份稿子时会发生什么
+
+面板写的是工作区里**同一份** `.novelnovel/` 文件，模型也在写它。所以每条写入都带版本校验：
+
+- 保存正文时，面板把它**打开时读到的那份文本**一起回传。宿主比对磁盘：对得上才写，
+  对不上就回 **409**，面板显示「这一章在你编辑期间被改过了……**没有保存**」。
+  这时点「重新加载」拿到最新正文，再在最新的一版上重做改动——**不会静默盖掉任何人的字**。
+- 冲突时**你的草稿不会被清掉**（留在编辑器里），刷新只影响底稿。
+- 反过来，模型那边的写入也走同一套：它在面板改过文件之后写，会失败并提示重新读取。
+
+### 安全口径（能写之后才需要说的）
+
+- 路由仍然只认**本进程里真会话用过的工作目录**（`?cwd=` 由面板告知并按白名单校验），
+  未注册的工作区一律 **403 `unknown_workspace`**。
+- **写请求另加一道同源校验**：`Sec-Fetch-Site: cross-site`，或 `Origin` 指向别的站点，
+  一律 **403 `cross_origin`**。读请求不需要（跨源读会被浏览器的 CORS 挡住）。
+- 删除类操作要求 `confirm=true`，面板上的「确认删除」就是它的来源。
+- 面板写入会**记进「先读后写」的台账**（复用白名单里那个真会话对象作为 actor），
+  所以模型之后可以直接写它、不需要先读一遍——没有"面板是例外"这种口径。
+
+### 三条容易误判成故障的行为
 
 - **首次打开显示"尚未确定工作目录"**：HTTP 路由没有会话上下文，工作目录只能由面板告知，
   而面板只认「本进程里真会话用过的工作目录」。先让模型调一次任意 `novel_*` 工具，再点刷新。
-  （这条白名单不是多余的小心：没有它，任何拿到会话 cookie 的页面都能指定任意目录去读。）
+  （这条白名单不是多余的小心：没有它，任何拿到会话 cookie 的页面都能指定任意目录去读写。）
+- **点保存没反应/报 409**：多半是模型正在同一章上工作。按提示「重新加载」再来，别把草稿弄丢。
 - **读不出来的东西一律点名**：作品目录坏了、某章正文文件不在磁盘上，面板会**明说**（而不是显示成空），
   否则用户会以为"没有作品"而去新建，真正的问题是他手改坏了一个文件。
+
+### 还没做（面板侧）
+
+- **项目设定**（简介 / 世界观 / 写作要求 / 大纲 / 标题）还不能在面板上改——目前只有目标字数有入口，
+  其余仍然由模型用 `novel_project action=update` 写。
+- **角色卡头像**只显示"有/没有"，面板不渲染图片。
+- **词条（lorebook）面板**还没有，`novel_lorebook` 只有工具面。
+- 面板不做**自动刷新**：模型写完不会自己跳出来，点「刷新」或重开面板（`connection/reset` 会重取）。
 
 ## 装你自己的写作方法
 
@@ -400,7 +433,7 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 <工作目录>/.novelnovel/
   workspace.json                        当前作品
   projects/<projectId>/
-    project.json                        标题 / 简介 / 世界观 / 写作要求（+ 可选的全书梗概 `outline`，每章进简报）
+    project.json                        标题 / 简介 / 世界观 / 写作要求（+ 可选：全书梗概 `outline` 每章进简报、目标字数 `targetWords` 只看进度）
     outline.md                          可选：细纲（分卷/分幕、伏笔、关系变化）。**不进简报**，模型按需 `read`
     lorebook.json                       世界观词条
     presets.json                        写作预设与激活项
@@ -433,6 +466,7 @@ novel_lorebook action=add name=祭司 keys=夜祷 content=…        → 记录�
 novel_project action=update outline="全书梗概…"        # 大纲第一层；action=show 会回显它
 novel_chapter action=create title="第三章" goal="…"     # 建章时顺手写大纲第三层
 novel_chapter action=meta chapter=3 goal="…" summary="…"   # 之后补写或改写
+novel_project action=update target_words=100000                # 全书目标字数（只看进度，不改变模型怎么写）
 ```
 
 三层各走各的路（`docs/design/auto-writer.md` §4）：
@@ -567,7 +601,7 @@ npm run build       # esbuild 打包两个半边：lib/index.js（宿主）+ lib
 npm run typecheck   # tsc -p .（严格模式，零错误）
 npm test            # 9 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 自检与词条治理 / 检索 / 排序 / 技能包 / 字数与词条匹配 / …）+ 5 个客户端单测
 npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
-npm run test:dsh    # 端到端验证 64 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
+npm run test:dsh    # 端到端验证 65 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
 npm run test:race   # 并发交错：CAS 真的挡住了吗（单次调用测不出静默覆盖）
 npm run test:edge   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 半成品状态的点名
 npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
@@ -590,9 +624,9 @@ npm run test:compose     # 真 ClientModuleRegistry 组合：boot graph 含本�
 npm run test:bundle-runs # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives  # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
 npm run test:tokens      # 面板用的 CSS 变量必须在首方产物里存在
-npm run test:routes      # Web 路由：真实请求打过来，状态码与错误分级
+npm run test:routes      # Web 路由（读 + 写）：真实请求打过来，状态码、错误分级、内容级 CAS、同源校验
 npm run test:render      # 用 jsdom 真渲染整棵面板（不复制面板代码）
-npm run test:interaction # 真 DOM 挂载 + 真实点击/键盘事件
+npm run test:interaction # 真 DOM 挂载 + 真实点击/键盘：增删改章节、编辑保存、导入卡、目标字数
 ```
 
 `test:dsh` / `test:perf` 会用 **DSH 自带的 Electron Node** 启动测试（harness 包在 `app.asar` 里，
@@ -606,7 +640,7 @@ SkillRegistry + observation policy）并驱动全部工具：作品/章节/词�
 （技能包导入→列出→导出→再导入→删除，含手写技能不被覆盖、校验失败不写一半）/命令处理器/配置校验/
 工作区边界与损坏文件容错（坏作品目录、坏角色卡、索引缺失、拒绝覆盖已有文件、追加空白保真、
 `position`/`limit` 边界、同名预设）/观察记录归属/真分发链路（`ctx.tools.execute`：参数校验 + 输出
-schema）/卸载清理/系统提示词段，共 64 项检查，不调用模型。其中**自检那一段用一个假的 `subagents`
+schema）/面板写入的记账/卸载清理/系统提示词段，共 65 项检查，不调用模型。其中**自检那一段用一个假的 `subagents`
 服务**：真起子 agent 就要调模型，而这里要验的是我们这一半——传出去的 spec（材料齐不齐、
 子 agent 的权限有没有被收空、persona 与 `outputSchema` 对不对）、拿回来之后的处理
 （连败计数落盘、坏形状降级、只读不写词条）；`outputSchema` 本身还额外过了一遍 harness

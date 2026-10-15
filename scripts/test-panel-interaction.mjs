@@ -51,6 +51,7 @@ const chapterSummary = (over) => ({
   tags: ["伏笔"],
   words: 3200,
   updatedAt: 0,
+  review: null,
   ...over,
 });
 
@@ -62,7 +63,20 @@ const chapterSummary = (over) => ({
  * 章节算起，测出来的"行为"是假象（我第一版就是这样，看起来像 off-by-one 又犯了）。
  */
 async function mount(stateOverrides) {
-  const calls = { selectChapter: [], selectProject: [], refresh: 0 };
+  const calls = {
+    selectChapter: [],
+    selectProject: [],
+    refresh: 0,
+    saveChapter: [],
+    createChapter: [],
+    renameChapter: [],
+    deleteChapter: [],
+    moveChapter: [],
+    setTargetWords: [],
+    importCharacter: [],
+    setCharacterActive: [],
+    deleteCharacter: [],
+  };
   const container = document.createElement("div");
   document.body.appendChild(container);
   let state = { ...INITIAL, ...stateOverrides };
@@ -85,8 +99,41 @@ async function mount(stateOverrides) {
                 },
                 selectChapter: (id) => {
                   calls.selectChapter.push(id);
-                  state = { ...state, chapterId: id, chapter: { id, title: id, tags: [], words: 0, content: "", updatedAt: 0 } };
+                  state = {
+                    ...state,
+                    chapterId: id,
+                    chapter: { id, title: id, tags: [], words: 0, content: "", updatedAt: 0, goal: "", review: null },
+                  };
                   void render();
+                },
+                // 写操作在面板里是"先请求后重取"，这里只记下调用与参数——
+                // 重取由 state.ts 负责，交互测试要验的是**接线**（点了有没有调、传的是什么）
+                saveChapter: (content) => {
+                  calls.saveChapter.push(content);
+                },
+                createChapter: (title) => {
+                  calls.createChapter.push(title);
+                },
+                renameChapter: (id, title) => {
+                  calls.renameChapter.push([id, title]);
+                },
+                deleteChapter: (id) => {
+                  calls.deleteChapter.push(id);
+                },
+                moveChapter: (id, direction) => {
+                  calls.moveChapter.push([id, direction]);
+                },
+                setTargetWords: (words) => {
+                  calls.setTargetWords.push(words);
+                },
+                importCharacter: (file) => {
+                  calls.importCharacter.push(file);
+                },
+                setCharacterActive: (id, active) => {
+                  calls.setCharacterActive.push([id, active]);
+                },
+                deleteCharacter: (id) => {
+                  calls.deleteCharacter.push(id);
                 },
               },
             },
@@ -98,6 +145,24 @@ async function mount(stateOverrides) {
   };
   await render();
   return { container, calls, unmount: () => act(() => root.unmount()) };
+}
+
+/** 按可见文字找按钮：比 `querySelectorAll("button")[0]` 稳（新增一个按钮就会错位） */
+function buttonByText(container, text) {
+  return [...container.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === text);
+}
+
+async function change(target, value) {
+  await act(async () => {
+    // **必须走原型上的 setter**：直接 `target.value = x` 会同时更新 React 挂在节点上的
+    // value tracker，React 认为"值没变"从而不调 onChange——测出来的会是假失败
+    const proto =
+      target.tagName === "TEXTAREA"
+        ? dom.window.HTMLTextAreaElement.prototype
+        : dom.window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value").set.call(target, value);
+    target.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
 }
 
 /** 派发一次按键到指定元素（默认面板根） */
@@ -114,18 +179,18 @@ async function click(target) {
 }
 
 const baseDetail = {
-  project: { id: "p1", title: "夜行者", synopsis: "", updatedAt: 0 },
+  project: { id: "p1", title: "夜行者", synopsis: "", updatedAt: 0, targetWords: null },
   chapters: [chapterSummary({ id: "c1", title: "第一章" }), chapterSummary({ id: "c2", title: "第二章" }), chapterSummary({ id: "c3", title: "第三章" })],
   characters: [],
   lorebook: [],
 };
 const baseState = {
   loading: false,
-  projects: [{ id: "p1", title: "夜行者", chapters: 3, words: 9000, active: true, updatedAt: 0 }],
+  projects: [{ id: "p1", title: "夜行者", chapters: 3, words: 9000, targetWords: null, active: true, updatedAt: 0 }],
   activeId: "p1",
   detail: baseDetail,
   chapterId: "c2",
-  chapter: { id: "c2", title: "第二章", tags: [], words: 3000, content: "正文" },
+  chapter: { id: "c2", title: "第二章", tags: [], words: 3000, content: "正文", updatedAt: 0, goal: "", review: null },
 };
 
 // ── 点击章节行 ─────────────────────────────────────────────────────
@@ -150,7 +215,7 @@ console.log("--- 点击章节行 ---");
 console.log("--- 刷新按钮 ---");
 {
   const { container, calls, unmount } = await mount(baseState);
-  const button = [...container.querySelectorAll("button")][0];
+  const button = buttonByText(container, "刷新");
   check("找到刷新按钮", button !== undefined, button?.textContent ?? "");
   if (button) await click(button);
   check("点击触发 refresh", calls.refresh === 1, `refresh=${String(calls.refresh)}`);
@@ -220,6 +285,158 @@ console.log("--- 键盘不该响应的情况 ---");
   calls.selectChapter.length = 0;
   if (select) await press(select, "ArrowDown");
   check("在 select 上按 ↓ 不切换章节（表单元素豁免）", calls.selectChapter.length === 0, JSON.stringify(calls.selectChapter));
+  await unmount();
+}
+
+// ── 写操作：章节的增 / 改 / 删 / 排序 ───────────────────────────────
+console.log("--- 章节写操作 ---");
+{
+  const { container, calls, unmount } = await mount(baseState);
+  await click(buttonByText(container, "＋ 新建"));
+  const input = container.querySelector(".nnv-form .nnv-input");
+  check("点「＋ 新建」出现输入框", input !== null);
+  if (input) await change(input, "第四章 祭坛");
+  await click(buttonByText(container, "新建"));
+  check(
+    "提交后调用 createChapter(title)",
+    calls.createChapter[0] === "第四章 祭坛",
+    JSON.stringify(calls.createChapter),
+  );
+  await unmount();
+}
+{
+  const { container, calls, unmount } = await mount(baseState);
+  const row = container.querySelectorAll(".nnv-row")[0];
+  const rename = [...row.querySelectorAll("button")].find((b) => b.textContent === "✎");
+  check("章节行有改名按钮", rename !== undefined);
+  if (rename) await click(rename);
+  const input = container.querySelector(".nnv-form .nnv-input");
+  if (input) await change(input, "第一章 改名后");
+  await click(buttonByText(container, "改名"));
+  check(
+    "改名调用 renameChapter(id, title)",
+    JSON.stringify(calls.renameChapter[0]) === JSON.stringify(["c1", "第一章 改名后"]),
+    JSON.stringify(calls.renameChapter),
+  );
+  await unmount();
+}
+{
+  const { container, calls, unmount } = await mount(baseState);
+  const row = container.querySelectorAll(".nnv-row")[0];
+  const remove = [...row.querySelectorAll("button")].find((b) => b.textContent === "✕");
+  check("章节行有删除按钮", remove !== undefined);
+  if (remove) await click(remove);
+  check("第一次点 ✕ 只进入确认态，不删", calls.deleteChapter.length === 0, JSON.stringify(calls.deleteChapter));
+  await click(buttonByText(container, "确认删除"));
+  check("点了「确认删除」才真的删", calls.deleteChapter[0] === "c1", JSON.stringify(calls.deleteChapter));
+  await unmount();
+}
+{
+  const { container, calls, unmount } = await mount(baseState);
+  const rows = container.querySelectorAll(".nnv-row");
+  const up = [...rows[0].querySelectorAll("button")].find((b) => b.textContent === "↑");
+  const down = [...rows[0].querySelectorAll("button")].find((b) => b.textContent === "↓");
+  check("第一章的 ↑ 是禁用的（已经在头）", up?.disabled === true);
+  if (down) await click(down);
+  check(
+    "点 ↓ 调用 moveChapter(id, down)",
+    JSON.stringify(calls.moveChapter[0]) === JSON.stringify(["c1", "down"]),
+    JSON.stringify(calls.moveChapter),
+  );
+  await unmount();
+}
+
+// ── 写操作：正文编辑与保存基准 ─────────────────────────────────────
+console.log("--- 正文编辑 ---");
+{
+  const { container, calls, unmount } = await mount(baseState);
+  check("默认是阅读态（没有 textarea）", container.querySelector(".nnv-textarea") === null);
+  await click(buttonByText(container, "编辑正文"));
+  const textarea = container.querySelector(".nnv-textarea");
+  check("进入编辑态出现 textarea", textarea !== null);
+  check("textarea 里是当前正文", textarea?.value === "正文", textarea?.value ?? "(无)");
+  // 没改动时点保存**什么都不该发生**（`disabled` 在面板的组件库 shim 上会被丢掉，
+  // 所以这里验的是处理函数里的守卫——那才是换实现后仍然成立的那一道）
+  await click(buttonByText(container, "保存"));
+  check("没改动时点保存不发出写请求", calls.saveChapter.length === 0, JSON.stringify(calls.saveChapter));
+  if (textarea) await change(textarea, "改过的正文");
+  await click(buttonByText(container, "保存"));
+  check(
+    "保存把**草稿全文**交给 saveChapter",
+    calls.saveChapter[0] === "改过的正文",
+    JSON.stringify(calls.saveChapter),
+  );
+  await click(buttonByText(container, "重新加载"));
+  check("「重新加载」触发 refresh（冲突后拿回最新正文的路）", calls.refresh >= 1, `refresh=${String(calls.refresh)}`);
+  await unmount();
+}
+
+// ── 写操作：角色卡（导入 / 参与开关 / 删除）与目标字数 ─────────────
+console.log("--- 角色卡与目标字数 ---");
+{
+  const detail = {
+    ...baseDetail,
+    characters: [
+      { id: "ch1", name: "林晚", active: true, specVersion: "v2", hasAvatar: false, description: "守夜人" },
+    ],
+  };
+  const { container, calls, unmount } = await mount({ ...baseState, detail });
+
+  const toggle = container.querySelector(".nnv-check");
+  check("角色卡有参与开关", toggle !== null);
+  if (toggle) await click(toggle);
+  check(
+    "取消参与 → setCharacterActive(id, false)",
+    JSON.stringify(calls.setCharacterActive[0]) === JSON.stringify(["ch1", false]),
+    JSON.stringify(calls.setCharacterActive),
+  );
+
+  const fileInput = container.querySelector('input[type="file"]');
+  check("有（隐藏的）文件选择框", fileInput !== null);
+  if (fileInput) {
+    const file = new dom.window.File([new Uint8Array([137, 80, 78, 71])], "卡.png", { type: "image/png" });
+    Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+    await act(async () => {
+      fileInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+  }
+  check(
+    "选中文件后调用 importCharacter(file)",
+    calls.importCharacter.length === 1 && calls.importCharacter[0].name === "卡.png",
+    String(calls.importCharacter.length),
+  );
+
+  const remove = [...container.querySelectorAll(".nnv-row-char button")].find((b) => b.textContent === "✕");
+  if (remove) await click(remove);
+  check("删卡也要二次确认（第一次不删）", calls.deleteCharacter.length === 0);
+  await click(buttonByText(container, "确认删除"));
+  check("确认后调用 deleteCharacter(id)", calls.deleteCharacter[0] === "ch1", JSON.stringify(calls.deleteCharacter));
+  await unmount();
+}
+{
+  // 没设目标：入口写着"设目标字数"；设了之后显示百分比
+  const { container, calls, unmount } = await mount(baseState);
+  const entry = container.querySelector(".nnv-target");
+  check("顶栏有目标字数入口", entry !== null, entry?.textContent ?? "");
+  check("没设目标时显示「设目标字数」", entry?.textContent === "设目标字数", entry?.textContent ?? "");
+  if (entry) await click(entry);
+  const number = container.querySelector('.nnv-input[type="number"]');
+  check("点开后出现数字输入框", number !== null);
+  if (number) await change(number, "120000");
+  await click(buttonByText(container, "确定"));
+  check("提交后调用 setTargetWords(120000)", calls.setTargetWords[0] === 120000, JSON.stringify(calls.setTargetWords));
+  await unmount();
+}
+{
+  const detail = { ...baseDetail, project: { ...baseDetail.project, targetWords: 100000 } };
+  const projects = [{ id: "p1", title: "夜行者", chapters: 3, words: 36000, targetWords: 100000, active: true, updatedAt: 0 }];
+  const { container, unmount } = await mount({ ...baseState, detail, projects });
+  const entry = container.querySelector(".nnv-target");
+  check(
+    "设了目标就显示已写/目标的百分比",
+    entry?.textContent === "目标 10.0 万字（36%）",
+    entry?.textContent ?? "(无)",
+  );
   await unmount();
 }
 

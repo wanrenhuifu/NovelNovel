@@ -187,6 +187,29 @@ function sanitizeChapterIndex(index: ChapterIndex): ChapterIndex {
   return { ...index, items: kept };
 }
 
+/**
+ * 全书目标字数的归一化：`null` / `0` / `undefined` 都表示"没有目标"（返回 undefined），
+ * 其余必须是正的整数。
+ *
+ * 为什么在 store 里校验而不是各调用方：工具与面板写路由是两条入口，
+ * 规则只能有一份——否则面板能写进一个 `-1` 或 `1e9`，而工具拒绝，两边对不上。
+ */
+function normalizeTargetWords(value: number | null | undefined): number | undefined {
+  if (value === undefined || value === null || value === 0) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    // 带 code：Web 路由要把它翻成 400（调用方的输入问题），而不是落到 500「插件内部出错」
+    throw Object.assign(new Error("targetWords must be a positive integer (0 clears it)"), {
+      code: "NN_BAD_TARGET_WORDS",
+    });
+  }
+  if (value > 100_000_000) {
+    throw Object.assign(new Error("targetWords is unreasonably large (at most 100000000)"), {
+      code: "NN_BAD_TARGET_WORDS",
+    });
+  }
+  return value;
+}
+
 export class NovelStore {
   private readonly ops: FsOps;
 
@@ -258,6 +281,25 @@ export class NovelStore {
     const session = this.workspaces.get(key);
     if (session === undefined) return undefined;
     return this.ops.sessionFor(session);
+  }
+
+  /**
+   * 面板**写入**要用的文件会话：与 `workspaceOf` 同一个白名单，但**多带一个 actor**。
+   *
+   * 为什么必须带：写入后 `fsx` 会 `emit('fs/observed', target, …, actor)`，而
+   * 「先读后写」策略取 owner 的方式是 `actor?.agent?.session`
+   * （`dsh-fs-observation-policy/lib/index.js:29`）。HTTP 路由没有 exec，所以
+   * `workspaceOf` 返回的会话 `actor` 是空的 → 面板写过的文件不会记账 →
+   * 模型随后用首方 `write`/`edit` 会被要求"先读一遍"（写入明明刚发生过）。
+   * 这里复用的正是记进白名单的**那个真 Session 对象**，所以策略照常记账——
+   * 不需要新机制，也不留"面板是例外"这种口径。
+   */
+  writeWorkspaceOf(cwd: string | null | undefined): FsSession | undefined {
+    const session = this.workspaceOf(cwd);
+    if (session === undefined) return undefined;
+    const header = session.cwd;
+    const real = this.workspaces.get(header);
+    return real === undefined ? session : { ...session, actor: { agent: { session: real } } };
   }
 
   /** 已知工作目录清单（供前端在 403 时自助纠正） */
@@ -587,10 +629,12 @@ export class NovelStore {
       worldbuilding?: string;
       authorNote?: string;
       outline?: string;
+      targetWords?: number;
     },
   ): Promise<NovelProject> {
     const title = input.title.trim();
     if (!title) throw new Error("project title is required");
+    const targetWords = normalizeTargetWords(input.targetWords);
     const id = await this.slugForTitle(session, title);
     const now = Date.now();
     const project: NovelProject = {
@@ -602,6 +646,7 @@ export class NovelStore {
       // outline 是可选字段：没给（或只给了空白）就**不写这个键**，
       // 新建的 project.json 与旧版逐字相同——可选字段在数据文件里也要看得见。
       ...(input.outline?.trim() ? { outline: input.outline.trim() } : {}),
+      ...(targetWords === undefined ? {} : { targetWords }),
       createdAt: now,
       updatedAt: now,
     };
@@ -630,7 +675,10 @@ export class NovelStore {
     projectId: string,
     patch: Partial<
       Pick<NovelProject, "title" | "synopsis" | "worldbuilding" | "authorNote" | "outline">
-    >,
+    > & {
+      /** 全书目标字数；`null` 或 0 = 删掉这个字段（与 `review: null` 同口径） */
+      targetWords?: number | null;
+    },
   ): Promise<NovelProject> {
     if (patch.title !== undefined && !patch.title.trim()) {
       throw new Error("project title cannot be empty");
@@ -651,6 +699,13 @@ export class NovelStore {
       // 这里不做 trim：`outline` 是可选字段、读侧按 trim 后为空视为没有，所以留一个空串
       // 与删掉键在语义上等价，但存储形状保持稳定（不必为一个字段再分叉写入路径）。
       if (patch.outline !== undefined) project.outline = patch.outline;
+      // 数值字段没有"空串"可用，所以清空是显式的 `null` / `0`：写 `delete` 让
+      // `project.json` 回到没有这个键的形状（可选字段的缺失就是"没设目标"）
+      if (patch.targetWords !== undefined) {
+        const target = normalizeTargetWords(patch.targetWords);
+        if (target === undefined) delete project.targetWords;
+        else project.targetWords = target;
+      }
       project.updatedAt = Date.now();
       await this.ops.writeJson(this.projectFile(projectId), project, session, basis);
       return project;
@@ -1456,8 +1511,41 @@ export class NovelStore {
   }
 
   /**
-   * 追加正文（续写的落地写入口）。
+   * 面板保存正文：**内容相等**才算"没人动过"。
    *
+   * 为什么不用版本号：`ctx.fs` 的版本是不透明对象，要经 HTTP 序列化再送回来（能不能还原
+   * 得靠 provider 的实现，不该赌）；而"面板当时看到的那份文本"本来就在手里——直接比对内容
+   * 既不需要序列化，冲突时也能把话说清楚。
+   *
+   * 拿到**同一次读**的 basis 再写，所以 `ctx.fs` 那一层的 CAS 照样成立：
+   * 这两步之间被谁改过仍然会失败，不会静默覆盖。
+   */
+  async writeChapterBodyIfUnchanged(
+    session: FsSession,
+    projectId: string,
+    chapterId: string,
+    content: string,
+    expectedText: string,
+  ): Promise<Chapter> {
+    const { text: current, basis } = await this.readChapterBodyVersioned(
+      session,
+      projectId,
+      chapterId,
+    );
+    if (current !== expectedText) {
+      throw Object.assign(
+        new Error(
+          "this chapter changed while you were editing it (the model or another window wrote it). " +
+            "Reload the chapter and redo your edit on the current text — nothing was saved.",
+        ),
+        { code: "NN_STALE_VERSION" },
+      );
+    }
+    return this.writeChapterBody(session, projectId, chapterId, content, basis);
+  }
+
+  /**
+   * 追加正文（续写的落地写入口）。   *
    * 负载**不做 trim**：前导空行与 markdown 硬换行（行尾两空格）都是正文的一部分，
    * 「追加」不应该顺手重写它们。只在需要时补一个段落分隔。
    */
@@ -1683,6 +1771,22 @@ export class NovelStore {
   ): Promise<ImportedCharacterResult> {
     const bytes = await this.ops.readBytesOrNull(filePath, session);
     if (!bytes) throw new Error(`character card not found: ${filePath}`);
+    return this.importCharacterBytes(session, projectId, bytes, filePath);
+  }
+
+  /**
+   * 同一套导入链路，但**字节由调用方直接给**（Web 面板的上传走这条）。
+   *
+   * 为什么不让面板把上传写成一个临时文件再调 `importCharacter`：那要往用户的数据目录里
+   * 落一个中间文件、还要保证清理（失败/取消时就是垃圾），而字节本来就在手里。
+   * 两条入口共用这一个实现，导入语义（预检、三步回滚、世界书并入）只有一份。
+   */
+  async importCharacterBytes(
+    session: FsSession,
+    projectId: string,
+    bytes: Uint8Array,
+    filePath: string,
+  ): Promise<ImportedCharacterResult> {
     const parsed = await parseCharacterBytes(bytes, filePath, mediaTypeOf(filePath));
     // 落盘之前先确认世界书**能不能读**：lorebook.json 坏了的时候在这里就失败，
     // 而不是写完卡片、头像之后再抛错，留下「报失败但卡片已 active 并参与简报」的半成品。

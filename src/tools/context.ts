@@ -10,6 +10,7 @@
  */
 import { buildContinueUserMessage, buildSystemPrompt, rankLoreEntries } from "../domain/prompt";
 import { buildLoreFilterPrompt, normalizeLoreFilter, LORE_FILTER_OUTPUT_SCHEMA } from "../domain/loreFilter";
+import { wordProgress } from "../domain/progress";
 import { lines, TEXT_OUTPUT, textRender, type ToolDeps } from "./shared";
 import { runStructuredSubagent } from "./subagent";
 
@@ -188,6 +189,15 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
         // 写作进度：**一次 listDir**，不读任何正文（自动写作循环每轮都要问"下一章是谁"）
         const progress = await store.chapterProgress(session, projectId);
         const next = progress.pending[0];
+        // 只有设了全书目标字数才去量总字数（走按文件大小校验的缓存，但仍是额外调用）：
+        // 老作品没有这个字段时，这一步的开销与加这个功能之前逐次相同
+        const wordTarget =
+          project.targetWords === undefined
+            ? null
+            : wordProgress(
+                (await store.listChapterWordCounts(session, projectId)).words,
+                project.targetWords,
+              );
 
         const summary = lines(
           `# Writing brief · 《${project.title}》 / ${chapter.title} [${chapter.id}]`,
@@ -196,6 +206,7 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
             (next
               ? ` · next unwritten: ${next.title} [${next.id}]${next.goal?.trim() ? ` — goal: ${next.goal.trim()}` : ""}`
               : " · every chapter has text"),
+          wordTarget === null ? null : `words: ${wordTarget}`,
           `preset: ${preset ? `${preset.name} (${preset.kind})` : "(built-in default)"}`,
           "",
           "## System prompt — the author's setting & style guidance (follow it)",
@@ -253,6 +264,7 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
             ...(truncated.length > 0 ? { truncated_entries: truncated } : {}),
             eligible_lore_entries: eligible.length,
             characters: characters.map((character) => character.name),
+            target_words: project.targetWords ?? null,
             progress: {
               total: progress.total,
               written: progress.written,

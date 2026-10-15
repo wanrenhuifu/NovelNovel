@@ -4,6 +4,7 @@
  */
 import type { NovelProject } from "../types";
 import type { ProjectPatch } from "../store";
+import { wordProgress } from "../domain/progress";
 import { lines, requireFields, TEXT_OUTPUT, textRender, type ToolDeps } from "./shared";
 
 function describe(project: NovelProject, chapterCount: number, words: number, active: boolean): string {
@@ -57,6 +58,13 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
             "roughly 300-800 characters. It is pushed into every writing brief as a `## 全书大纲` block, " +
             "with or without a preset, so keep it to the throughline. Pass an empty string to clear it.",
         },
+        target_words: {
+          type: "integer",
+          description:
+            "Whole-book target word count, used for the progress readout only (action=show, the panel, the " +
+            "novel_context progress line). It does NOT change how the prose is written — put per-chapter " +
+            "length requirements in author_note or the chapter's goal. Pass 0 to clear it.",
+        },
         confirm: {
           type: "boolean",
           description: "Must be true to delete a project. Ask the user first.",
@@ -108,6 +116,7 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
             ...(args.worldbuilding !== undefined ? { worldbuilding: args.worldbuilding } : {}),
             ...(args.author_note !== undefined ? { authorNote: args.author_note } : {}),
             ...(args.outline !== undefined ? { outline: args.outline } : {}),
+            ...(args.target_words !== undefined ? { targetWords: args.target_words } : {}),
           });
           return {
             action: args.action,
@@ -138,10 +147,11 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
           if (args.worldbuilding !== undefined) patch.worldbuilding = args.worldbuilding;
           if (args.author_note !== undefined) patch.authorNote = args.author_note;
           if (args.outline !== undefined) patch.outline = args.outline;
+          if (args.target_words !== undefined) patch.targetWords = args.target_words;
           const fields = Object.keys(patch);
           requireFields(
             fields,
-            "nothing to update: pass at least one of title / synopsis / worldbuilding / author_note / outline",
+            "nothing to update: pass at least one of title / synopsis / worldbuilding / author_note / outline / target_words",
           );
           const project = await store.updateProject(session, projectId, patch);
           return {
@@ -178,11 +188,13 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
           // 自动写作循环靠这一行判断"还剩几章、下一章是谁"（一次 listDir，不读正文）
           const progress = await store.chapterProgress(session, projectId);
           const next = progress.pending[0];
+          const wordTarget = wordProgress(stats.words, project.targetWords);
           return {
             action: args.action,
             summary: lines(
               `《${project.title}》 (${project.id})`,
               `chapters: ${stats.chapterCount}, words: ${stats.words}`,
+              wordTarget === null ? null : `target: ${wordTarget}`,
               `progress: ${progress.written}/${progress.total} chapters have text` +
                 (next
                   ? ` · next unwritten: ${next.title} [${next.id}]${next.goal?.trim() ? ` — goal: ${next.goal.trim()}` : ""}`
@@ -205,6 +217,8 @@ export function registerProjectTool({ ctx, store, defineTool }: ToolDeps): void 
               active_preset: activePreset?.name ?? null,
               // 没有 outline 的老作品如实报 null，不编一个空串出来（与 novel_context 的 goal 同口径）
               outline: project.outline?.trim() ? project.outline.trim() : null,
+              // 没有目标字数如实报 null（与 outline 同口径）
+              target_words: project.targetWords ?? null,
               progress: {
                 total: progress.total,
                 written: progress.written,

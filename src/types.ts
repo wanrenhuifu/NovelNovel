@@ -34,6 +34,14 @@ export interface NovelProject {
    * 与第二层 `outline.md` 是两回事：那份细纲太长、不进简报，由模型用首方 read/write 工具按需读。
    */
   outline?: string;
+  /**
+   * 全书目标字数（可选）。**只用于看目标与进度**：面板与 `action=show` / `novel_context`
+   * 的进度行会显示「已写 3.6 万 / 目标 10 万」，它**不改变模型怎么写**——
+   * 每章的字数要求仍然写在 `authorNote`（写作要求）或每章的 `goal` 里。
+   *
+   * 与其它可选字段同口径：没有这个键时一切照旧；传 0（或面板上清空）就是删掉它。
+   */
+  targetWords?: number;
   createdAt: number;
   updatedAt: number;
 }

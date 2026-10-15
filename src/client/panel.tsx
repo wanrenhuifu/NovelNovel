@@ -1,14 +1,19 @@
 /**
- * 写作面板主视图：只读。
+ * 写作面板主视图：读 + 写。
  *
  * 取向：**像在读一本书**——行宽、行距、段落缩进按中文小说排版调过；
- * 界面元素克制，但每个数字都真实（章节体量、参与角色、命中词条）。
+ * 界面元素克制，但每个数字都真实（章节体量、参与角色、命中词条、自检结论）。
  *
- * 只读是刻意的：写操作要与模型抢同一份稿子，得先设计冲突 UX 并复用 CAS 语义。
+ * 写操作的三条口径（宿主侧是同一套，见 `src/clientApi.ts`）：
+ * - **不做乐观更新**：写完重取。改的是模型正在写的同一份稿子，屏幕上"对的一版"与磁盘不一致
+ *   是这个面板最不该有的状态。
+ * - **保存带基准**：把加载进来的那份正文（不是草稿）回传给宿主做比对，对不上就 409。
+ *   冲突时**保留用户输入**，只提示"重新加载"——用户写的东西不能因为一次冲突就没了。
+ * - **危险操作二次确认**：删章节 / 删角色卡都要在面板上再点一次"确认删除"。
  */
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, IconListPenOutlineRegular, Tag } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ChapterSummary, ProjectDetail } from "./api";
+import type { ChapterSummary, ProjectDetail, ReviewSummary } from "./api";
 import { usePanel } from "./state";
 import { useChapterKeys } from "./useChapterKeys";
 
@@ -20,8 +25,21 @@ const NO_LOREBOOK: ProjectDetail["lorebook"] = [];
 
 export function NovelPanel(): ReactNode {
   const { state, actions } = usePanel();
-  const { detail, chapter, projects, activeId, error, loading, chapterLoading, chapterId } = state;
+  const {
+    detail,
+    chapter,
+    projects,
+    activeId,
+    error,
+    notice,
+    loading,
+    chapterLoading,
+    chapterId,
+    busy,
+  } = state;
   const active = projects.find((p) => p.id === activeId) ?? null;
+  /** 正文编辑器是否打开（面板级状态：切章时自动退出） */
+  const [editing, setEditing] = useState(false);
 
   // 防御性兜底：`api.ts` 的类型只是对**未校验 JSON** 的断言，`state.ts` 的归一化是第一道防线，
   // 这里是第二道。渲染测试证明过：没有它时 `chapters: null` / `lorebook: null` / `characters: null`
@@ -32,6 +50,11 @@ export function NovelPanel(): ReactNode {
   const characters = Array.isArray(detail?.characters) ? detail.characters : NO_CHARACTERS;
   const lorebook = Array.isArray(detail?.lorebook) ? detail.lorebook : NO_LOREBOOK;
   const { rootRef } = useChapterKeys(chapters, chapterId, actions.selectChapter);
+
+  // 换章就退出编辑：否则草稿会挂在上一章的正文上，保存下去就是串台
+  useEffect(() => {
+    setEditing(false);
+  }, [chapterId]);
 
   return (
     <div className="nnv-root" ref={rootRef} tabIndex={-1}>
@@ -55,16 +78,24 @@ export function NovelPanel(): ReactNode {
             ) : null}
           </span>
         ) : null}
+        {detail !== null ? (
+          <TargetWords
+            target={detail.project.targetWords}
+            words={active?.words ?? 0}
+            busy={busy}
+            onSet={actions.setTargetWords}
+          />        ) : null}
         <span className="nnv-spacer" />
         {projects.length > 1 ? (
           <ProjectSwitcher projects={projects} activeId={activeId} onSelect={actions.selectProject} />
         ) : null}
-        <Button size="sm" onClick={actions.refresh}>
+        <Button size="sm" onClick={actions.refresh} disabled={busy}>
           刷新
         </Button>
       </header>
 
       {error !== null ? <div className="nnv-error">{error}</div> : null}
+      {error === null && notice !== null ? <div className="nnv-notice">{notice}</div> : null}
 
       {/* 读不出来的作品必须点名：否则用户会以为"没有作品"而去新建，真正的问题是他手改坏了一个文件 */}
       {state.unreadable.length > 0 ? (
@@ -80,11 +111,25 @@ export function NovelPanel(): ReactNode {
         <EmptyWorkspace />
       ) : (
         <div className="nnv-columns">
-          <ChapterList
-            chapters={chapters}
-            selectedId={chapterId}
-            onSelect={actions.selectChapter}
-          />
+          <div className="nnv-side">
+            <ChapterList
+              chapters={chapters}
+              selectedId={chapterId}
+              busy={busy}
+              onSelect={actions.selectChapter}
+              onCreate={actions.createChapter}
+              onRename={actions.renameChapter}
+              onDelete={actions.deleteChapter}
+              onMove={actions.moveChapter}
+            />
+            <CharacterList
+              characters={characters}
+              busy={busy}
+              onImport={actions.importCharacter}
+              onToggle={actions.setCharacterActive}
+              onDelete={actions.deleteCharacter}
+            />
+          </div>
           <div className="nnv-body">
             <ChapterView
               chapters={chapters}
@@ -92,6 +137,21 @@ export function NovelPanel(): ReactNode {
               lorebook={lorebook}
               chapter={chapter}
               loading={chapterLoading}
+              busy={busy}
+              editing={editing}
+              onEdit={() => {
+                setEditing(true);
+              }}
+              onCancelEdit={() => {
+                setEditing(false);
+              }}
+              onSave={(text) => {
+                actions.saveChapter(text);
+              }}
+              onReload={() => {
+                setEditing(false);
+                actions.refresh();
+              }}
             />
           </div>
         </div>
@@ -126,18 +186,131 @@ function ProjectSwitcher({
   );
 }
 
+/**
+ * 全书目标字数（顶栏右侧）：显示"已写 / 目标（百分比）"，点一下就能改。
+ *
+ * 它**不改模型怎么写**（那是 author_note 与每章 goal 的事），只回答"离目标还有多远"。
+ */
+function TargetWords({
+  target: rawTarget,
+  words,
+  busy,
+  onSet,
+}: {
+  target: number | null | undefined;
+  words: number;
+  busy: boolean;
+  onSet: (words: number | null) => void;
+}): ReactNode {
+  // 归一化在这里再做一次：`detail` 走的是 `normalize.ts`，但渲染测试与任何绕过归一化的路径
+  // 都可能递来 `undefined` / 字符串 / 负数——`undefined` 会被当成"有目标"而渲染出 `NaN%`
+  const target =
+    typeof rawTarget === "number" && Number.isFinite(rawTarget) && rawTarget > 0 ? rawTarget : null;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(target === null ? "" : String(target));
+
+  useEffect(() => {
+    setDraft(target === null ? "" : String(target));
+  }, [target]);
+
+  if (!editing) {
+    const percent = target === null ? null : Math.floor((words / target) * 100);
+    return (
+      <button
+        type="button"
+        className="nnv-target"
+        title="设置全书目标字数（只用于看进度，不改变模型怎么写）"
+        onClick={() => {
+          setEditing(true);
+        }}
+      >
+        {target === null ? "设目标字数" : `目标 ${formatWords(target)}（${String(percent)}%）`}
+      </button>
+    );
+  }
+
+  const commit = (): void => {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      onSet(null);
+    } else {
+      const value = Number(trimmed);
+      if (!Number.isFinite(value) || value <= 0) return; // 非法输入就不提交，留在编辑态让用户改
+      onSet(Math.round(value));
+    }
+    setEditing(false);
+  };
+
+  return (
+    <span className="nnv-target-edit">
+      <input
+        className="nnv-input nnv-input-sm"
+        type="number"
+        min={0}
+        value={draft}
+        placeholder="全书多少字"
+        autoFocus
+        onChange={(event) => {
+          setDraft((event.target as HTMLInputElement).value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape") setEditing(false);
+        }}
+      />
+      <Button size="sm" onClick={commit} disabled={busy}>
+        确定
+      </Button>
+      <Button
+        size="sm"
+        onClick={() => {
+          onSet(null);
+          setEditing(false);
+        }}
+        disabled={busy}
+      >
+        清除
+      </Button>
+      <Button
+        size="sm"
+        onClick={() => {
+          setEditing(false);
+        }}
+      >
+        取消
+      </Button>
+    </span>
+  );
+}
+
+/** 左栏上半：章节列表（新建 / 改名 / 排序 / 删除都在行内） */
 function ChapterList({
   chapters,
   selectedId,
+  busy,
   onSelect,
+  onCreate,
+  onRename,
+  onDelete,
+  onMove,
 }: {
   chapters: ChapterSummary[];
   /** 用户选中的章节 id（不是"已加载"的那个：切章期间高亮应当立刻跟随） */
   selectedId: string | null;
+  busy: boolean;
   onSelect: (id: string) => void;
+  onCreate: (title: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
+  onMove: (id: string, direction: "up" | "down") => void;
 }): ReactNode {
   // 体量条按最长章节归一化：不写死"多少字算长"
   const longest = chapters.reduce((max, c) => (c.words > max ? c.words : max), 0);
+  /** 正在改名的章节 + 草稿；正在确认删除的章节 */
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  /** 新建章节的行内表单 */
+  const [adding, setAdding] = useState<string | null>(null);
 
   return (
     <nav className="nnv-list">
@@ -145,38 +318,346 @@ function ChapterList({
         <span>章节</span>
         <span className="nnv-spacer" />
         <span>{String(chapters.length)}</span>
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            setAdding("");
+          }}
+        >
+          ＋ 新建
+        </Button>
       </div>
       <div className="nnv-list-body">
-        {chapters.map((c, index) => (
-          <button
-            key={c.id}
-            type="button"
-            className="nnv-row"
-            data-selected={c.id === selectedId}
-            title={asArray(c.tags).length > 0 ? asArray(c.tags).join(" · ") : undefined}
-            onClick={() => {
-              onSelect(c.id);
-            }}
-          >
-            <span className="nnv-row-index">{String(index + 1).padStart(2, "0")}</span>
-            <span className="nnv-row-main">
-              <span className="nnv-row-title">{c.title}</span>
-              <span className="nnv-row-meta">
-                <span>{formatWords(c.words)}</span>
-                {longest > 0 ? (
-                  <span className="nnv-bar">
-                    <span
-                      className="nnv-bar-fill"
-                      style={{ width: `${String(Math.max(6, Math.round((c.words / longest) * 100)))}%` }}
-                    />
-                  </span>
-                ) : null}
+        {adding !== null ? (
+          <div className="nnv-form">
+            <input
+              className="nnv-input"
+              value={adding}
+              placeholder="章节标题，例如：第三章 祭坛"
+              autoFocus
+              onChange={(event) => {
+                setAdding((event.target as HTMLInputElement).value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && adding.trim() !== "") {
+                  onCreate(adding.trim());
+                  setAdding(null);
+                }
+                if (event.key === "Escape") setAdding(null);
+              }}
+            />
+            <div className="nnv-form-actions">
+              <Button
+                size="sm"
+                disabled={busy || adding.trim() === ""}
+                onClick={() => {
+                  if (adding.trim() === "") return;
+                  onCreate(adding.trim());
+                  setAdding(null);
+                }}
+              >
+                新建
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setAdding(null);
+                }}
+              >
+                取消
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {chapters.length === 0 && adding === null ? (
+          <div className="nnv-hint nnv-list-empty">
+            还没有章节。点「＋ 新建」写第一章，或让模型用 novel_chapter action=append 落笔。
+          </div>
+        ) : null}
+
+        {chapters.map((c, index) => {
+          const review = asReview(c.review);
+          if (renaming !== null && renaming.id === c.id) {
+            return (
+              <div key={c.id} className="nnv-form">
+                <input
+                  className="nnv-input"
+                  value={renaming.title}
+                  autoFocus
+                  onChange={(event) => {
+                    setRenaming({ id: c.id, title: (event.target as HTMLInputElement).value });
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && renaming.title.trim() !== "") {
+                      onRename(c.id, renaming.title.trim());
+                      setRenaming(null);
+                    }
+                    if (event.key === "Escape") setRenaming(null);
+                  }}
+                />
+                <div className="nnv-form-actions">
+                  <Button
+                    size="sm"
+                    disabled={busy || renaming.title.trim() === ""}
+                    onClick={() => {
+                      if (renaming.title.trim() === "") return;
+                      onRename(c.id, renaming.title.trim());
+                      setRenaming(null);
+                    }}
+                  >
+                    改名
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setRenaming(null);
+                    }}
+                  >
+                    取消
+                  </Button>
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div
+              key={c.id}
+              className="nnv-row"
+              data-selected={c.id === selectedId}
+              role="button"
+              tabIndex={-1}
+              title={asArray<string>(c.tags).length > 0 ? asArray<string>(c.tags).join(" · ") : undefined}
+              onClick={() => {
+                setConfirming(null);
+                onSelect(c.id);
+              }}
+            >
+              <span className="nnv-row-index">{String(index + 1).padStart(2, "0")}</span>
+              <span className="nnv-row-main">
+                <span className="nnv-row-title">
+                  {c.title}
+                  {review !== null ? (
+                    <span className="nnv-badge" data-verdict={review.verdict}>
+                      {reviewLabel(review)}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="nnv-row-meta">
+                  <span>{formatWords(c.words)}</span>
+                  {longest > 0 ? (
+                    <span className="nnv-bar">
+                      <span
+                        className="nnv-bar-fill"
+                        style={{ width: `${String(Math.max(6, Math.round((c.words / longest) * 100)))}%` }}
+                      />
+                    </span>
+                  ) : null}
+                </span>
               </span>
-            </span>
-          </button>
-        ))}
+              {confirming === c.id ? (
+                <span className="nnv-row-actions">
+                  <button
+                    type="button"
+                    className="nnv-act"
+                    data-danger="true"
+                    disabled={busy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDelete(c.id);
+                      setConfirming(null);
+                    }}
+                  >
+                    确认删除
+                  </button>
+                  <button
+                    type="button"
+                    className="nnv-act"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setConfirming(null);
+                    }}
+                  >
+                    取消
+                  </button>
+                </span>
+              ) : (
+                <span className="nnv-row-actions">
+                  <button
+                    type="button"
+                    className="nnv-act"
+                    title="上移"
+                    disabled={busy || index === 0}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onMove(c.id, "up");
+                    }}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="nnv-act"
+                    title="下移"
+                    disabled={busy || index === chapters.length - 1}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onMove(c.id, "down");
+                    }}
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    className="nnv-act"
+                    title="改名"
+                    disabled={busy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setRenaming({ id: c.id, title: c.title });
+                    }}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    type="button"
+                    className="nnv-act"
+                    title="删除这一章"
+                    disabled={busy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setConfirming(c.id);
+                    }}
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
     </nav>
+  );
+}
+
+/** 左栏下半：角色卡（导入 / 参与开关 / 删除） */
+function CharacterList({
+  characters,
+  busy,
+  onImport,
+  onToggle,
+  onDelete,
+}: {
+  characters: ProjectDetail["characters"];
+  busy: boolean;
+  onImport: (file: File) => void;
+  onToggle: (id: string, active: boolean) => void;
+  onDelete: (id: string) => void;
+}): ReactNode {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  return (
+    <section className="nnv-chars">
+      <div className="nnv-list-head">
+        <span>角色卡</span>
+        <span className="nnv-spacer" />
+        <span>{String(characters.length)}</span>
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            fileRef.current?.click();
+          }}
+        >
+          导入
+        </Button>
+        <input
+          ref={fileRef}
+          className="nnv-file"
+          type="file"
+          accept=".png,.json,.webp,.jpg,.jpeg,image/png,image/webp,image/jpeg,application/json"
+          onChange={(event) => {
+            const input = event.target as HTMLInputElement;
+            const file = input.files?.[0];
+            // 清空 value：同一个文件选第二次也要能触发 change
+            input.value = "";
+            if (file !== undefined) onImport(file);
+          }}
+        />
+      </div>
+      <div className="nnv-list-body">
+        {characters.length === 0 ? (
+          <div className="nnv-hint nnv-list-empty">
+            还没有角色卡。点「导入」选一张 SillyTavern 的 PNG / JSON 卡。
+          </div>
+        ) : null}
+        {characters.map((c) => (
+          <div key={c.id} className="nnv-row nnv-row-char" data-selected={false}>
+            <input
+              type="checkbox"
+              className="nnv-check"
+              checked={c.active}
+              disabled={busy}
+              title={c.active ? "参与写作（设定会进简报）" : "不参与写作"}
+              onChange={(event) => {
+                onToggle(c.id, (event.target as HTMLInputElement).checked);
+              }}
+            />
+            <span className="nnv-row-main">
+              <span className="nnv-row-title" title={asString(c.description)}>
+                {c.name}
+              </span>
+              <span className="nnv-row-meta">
+                <span>{asString(c.specVersion) || "?"}</span>
+                {c.hasAvatar ? <span>· 有头像</span> : null}
+              </span>
+            </span>
+            {confirming === c.id ? (
+              <span className="nnv-row-actions">
+                <button
+                  type="button"
+                  className="nnv-act"
+                  data-danger="true"
+                  disabled={busy}
+                  onClick={() => {
+                    onDelete(c.id);
+                    setConfirming(null);
+                  }}
+                >
+                  确认删除
+                </button>
+                <button
+                  type="button"
+                  className="nnv-act"
+                  onClick={() => {
+                    setConfirming(null);
+                  }}
+                >
+                  取消
+                </button>
+              </span>
+            ) : (
+              <span className="nnv-row-actions">
+                <button
+                  type="button"
+                  className="nnv-act"
+                  title="删除这张卡"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(c.id);
+                  }}
+                >
+                  ✕
+                </button>
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -190,12 +671,31 @@ function ChapterView({
   lorebook,
   chapter,
   loading,
+  busy,
+  editing,
+  onEdit,
+  onCancelEdit,
+  onSave,
+  onReload,
 }: {
   chapters: ProjectDetail["chapters"];
   characters: ProjectDetail["characters"];
   lorebook: ProjectDetail["lorebook"];
-  chapter: { id: string; title: string; content: string; words: number } | null;
+  chapter: {
+    id: string;
+    title: string;
+    content: string;
+    words: number;
+    goal?: string;
+    review?: ReviewSummary | null;
+  } | null;
   loading: boolean;
+  busy: boolean;
+  editing: boolean;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (content: string) => void;
+  onReload: () => void;
 }): ReactNode {
   if (loading) {
     return (
@@ -212,7 +712,7 @@ function ChapterView({
     return (
       <div className="nnv-center">
         <span className="nnv-center-title">这本还没有章节</span>
-        <span className="nnv-hint">让模型用 novel_chapter action=append 写下第一章。</span>
+        <span className="nnv-hint">左栏点「＋ 新建」写第一章，或让模型用 novel_chapter action=append 落笔。</span>
       </div>
     );
   }
@@ -221,16 +721,40 @@ function ChapterView({
   const current = chapters[index];
   const participating = characters.filter((c) => c.active);
   const matched = matchEntries(lorebook, chapter.content);
+  const review = asReview(current?.review ?? chapter.review);
+  const goal = asString(chapter.goal);
 
   return (
     <>
       <div className="nnv-body-head">
-        <h1 className="nnv-body-title">{chapter.title}</h1>
+        <div className="nnv-body-headline">
+          <h1 className="nnv-body-title">{chapter.title}</h1>
+          <span className="nnv-spacer" />
+          {editing ? (
+            <>
+              <Button size="sm" onClick={onReload} disabled={busy}>
+                重新加载
+              </Button>
+              <Button size="sm" onClick={onCancelEdit} disabled={busy}>
+                退出编辑
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" onClick={onEdit}>
+              编辑正文
+            </Button>
+          )}
+        </div>
         <div className="nnv-chips">
           {index >= 0 ? <Tag>第 {String(index + 1)} 章</Tag> : null}
           <Tag>{formatWords(chapter.words)}</Tag>
+          {review !== null ? (
+            <span className="nnv-chip" data-tone={review.verdict === "pass" ? "brand" : "warn"}>
+              {reviewLabel(review)}
+            </span>
+          ) : null}
           {current !== undefined
-            ? asStringArray(current.tags).map((t) => <Tag key={t}>{t}</Tag>)
+            ? asArray<string>(current.tags).map((t) => <Tag key={t}>{t}</Tag>)
             : null}
           {participating.length > 0 ? (
             <span className="nnv-chip" data-tone="brand">
@@ -239,13 +763,87 @@ function ChapterView({
           ) : null}
           {matched > 0 ? <span className="nnv-chip">命中 {String(matched)} 条词条</span> : null}
         </div>
+        {goal !== "" ? <div className="nnv-goal">本章目标：{goal}</div> : null}
+        {editing ? (
+          <div className="nnv-hint nnv-edit-hint">
+            编辑的是磁盘上那份 Markdown 原文。保存时会带上你打开时的版本：
+            如果模型（或另一个窗口）在这期间写过这一章，保存会**失败**并提示你重新加载——不会静默盖掉它。
+          </div>
+        ) : null}
       </div>
-      <div className="nnv-read">
-        <div className="nnv-prose nnv-fade" key={chapter.id}>
-          {renderProse(chapter.content)}
+      {editing ? (
+        <ChapterEditor chapter={chapter} busy={busy} onSave={onSave} />
+      ) : (
+        <div className="nnv-read">
+          <div className="nnv-prose nnv-fade" key={chapter.id}>
+            {renderProse(chapter.content)}
+          </div>
         </div>
-      </div>
+      )}
     </>
+  );
+}
+
+/**
+ * 正文编辑器：一个 textarea + 保存。
+ *
+ * 两件事必须做对：
+ * - **草稿不能被脚下的重取冲掉**：保存后会重取（拿到新的字数），如果此时无条件用新正文覆盖
+ *   草稿，用户的输入就没了。规则是"只有草稿仍等于旧底稿（= 没改过）时才跟着新正文走"。
+ * - **基准是底稿不是草稿**：`onSave` 只传草稿，宿主侧要比对的那份由 `state.ts` 里的
+ *   `loadedContentRef` 提供（"我看到的是什么"与"我要写成什么"是两回事）。
+ */
+function ChapterEditor({
+  chapter,
+  busy,
+  onSave,
+}: {
+  chapter: { id: string; content: string };
+  busy: boolean;
+  onSave: (content: string) => void;
+}): ReactNode {
+  const [draft, setDraft] = useState(chapter.content);
+  const baseRef = useRef(chapter.content);
+
+  useEffect(() => {
+    const previous = baseRef.current;
+    if (previous === chapter.content) return;
+    baseRef.current = chapter.content;
+    setDraft((current) => (current === previous ? chapter.content : current));
+  }, [chapter.content]);
+
+  const dirty = draft !== chapter.content;
+
+  return (
+    <div className="nnv-edit">
+      <textarea
+        className="nnv-textarea"
+        value={draft}
+        spellCheck={false}
+        onChange={(event) => {
+          setDraft((event.target as HTMLTextAreaElement).value);
+        }}
+      />
+      <div className="nnv-edit-actions">
+        <span className="nnv-hint">
+          {dirty ? "有未保存的改动" : "与磁盘一致"}
+          {busy ? " · 保存中…" : ""}
+        </span>
+        <span className="nnv-spacer" />
+        <Button
+          size="sm"
+          disabled={busy || !dirty}
+          onClick={() => {
+            // 守卫写两遍（这里 + `disabled`）：`disabled` 是视觉与语义，但组件库换实现、
+            // 或测试里的 shim 丢掉这个属性时，一次"没改动也保存"的写入仍然会白白改写文件
+            if (busy || !dirty) return;
+            onSave(draft);
+          }}
+        >
+          保存
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -341,6 +939,21 @@ function matchEntries(entries: ProjectDetail["lorebook"], content: string): numb
   }).length;
 }
 
+/** 自检结论的中文说明（枚举之外的值当"没有结论"） */
+function asReview(value: unknown): ReviewSummary | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as { verdict?: unknown; attempts?: unknown };
+  const verdict = raw.verdict;
+  if (verdict !== "pass" && verdict !== "fail" && verdict !== "inconclusive") return null;
+  return { verdict, attempts: typeof raw.attempts === "number" ? raw.attempts : 0 };
+}
+
+function reviewLabel(review: ReviewSummary): string {
+  if (review.verdict === "pass") return "自检通过";
+  if (review.verdict === "fail") return `自检未过${review.attempts > 1 ? ` ×${String(review.attempts)}` : ""}`;
+  return "自检未判定";
+}
+
 /**
  * 兜底：落盘 JSON 是给人手改的，类型上非空、实际可能缺失或类型不对。
  *
@@ -351,11 +964,6 @@ function matchEntries(entries: ProjectDetail["lorebook"], content: string): numb
 function asArray<T>(value: unknown): T[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is T => typeof item === "object" && item !== null);
-}
-
-/** 字符串数组用这个（元素也要过滤，`tags: [1, null]` 不该进渲染） */
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function asString(value: unknown): string {
