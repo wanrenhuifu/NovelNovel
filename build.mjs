@@ -14,7 +14,7 @@
 //
 // 路径基于本文件位置解析，从任何目录调用 npm run build 都能正确落盘。
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build } from "./scripts/esbuild-compat.mjs";
 import { buildClient } from "./build.client.mjs";
 
 const packageDir = fileURLToPath(new URL(".", import.meta.url));

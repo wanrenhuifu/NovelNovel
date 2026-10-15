@@ -3,7 +3,7 @@
 // 存在的理由：这些数据来自**给人手改的** JSON（lorebook.json / chapters/index.json），
 // 宿主只判「能不能解析」，不判形状。缺一个字段就让面板整片空白过一次，所以这里把
 // 坏形状逐个钉住。
-import { build } from "esbuild";
+import { build } from "./esbuild-compat.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

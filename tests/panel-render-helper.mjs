@@ -5,7 +5,7 @@
 // 但能抓到：JSX 层面的崩溃、宿主数据形状不对时的崩溃、以及"某块 UI 该出现却没出现"。
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { build } from "esbuild";
+import { build } from "../scripts/esbuild-compat.mjs";
 
 /**
  * 平台组件库的 shim：每个名字渲染成带 `data-prim` 标记的元素，

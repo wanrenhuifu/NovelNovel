@@ -17,7 +17,7 @@
 // 那份清单的唯一来源是 scripts/client-platform-modules.mjs（测试也读它）。
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build } from "./scripts/esbuild-compat.mjs";
 import { PLATFORM_MODULES } from "./scripts/client-platform-modules.mjs";
 
 const packageDir = fileURLToPath(new URL(".", import.meta.url));

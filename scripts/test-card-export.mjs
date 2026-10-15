@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import esbuild from "./esbuild-compat.mjs";
 
 const outFile = join(mkdtempSync(join(tmpdir(), "nn-card-export-")), "bundle.mjs");
 // `write: false` + 手工落盘：esbuild 的**子进程**在受限环境下写不了工作区外的临时目录

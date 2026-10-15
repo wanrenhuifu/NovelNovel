@@ -14,7 +14,7 @@
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { rmSync } from "node:fs";
-import { build } from "esbuild";
+import { build } from "../scripts/esbuild-compat.mjs";
 import { load, registerHarnessHook } from "./harness-loader.mjs";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));

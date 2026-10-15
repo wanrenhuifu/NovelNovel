@@ -17,7 +17,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import esbuild from "esbuild";
+import esbuild from "./esbuild-compat.mjs";
 
 /**
  * 打包给定源码并 import 回来。
