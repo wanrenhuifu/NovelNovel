@@ -42,7 +42,7 @@ node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘�
 node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
-npm run test:dsh                    # 67 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 68 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives             # **升级 DSH 后的第一道闸**：从安装里的前端产物挖出外壳静态模块表，核对我们的 require 说明符都在表里；再核对 primitives 的导出名（0.2.1 起该包并入前端 bundle，导出名核对降级为"名字出现过"）
@@ -119,9 +119,9 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   每条带判定理由；含独立世界书的两种 JSON 形状解析）、`review.ts`（自检的硬门槛、子 agent 提示词、结论归一化）、`loreFilter.ts`（候选池筛选的提示词与
   **只准删**的归一化）、`progress.ts`（"已写 / 目标"字数的展示口径，三处共用）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
-  `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
+  `stateUpdate.ts`（状态层：迷你 YAML 初值解析、`<UpdateVariable>` 抠块与剥离、JSON Patch 变体的应用与拒绝口径、树渲染）、`skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `tests/verify.mjs` 端到端（67 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（68 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
   `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
@@ -347,6 +347,17 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   拆分规则只有 `splitLoreKeys` 一份实现（读取侧与写入侧共用），写入侧由 `normalizeLoreKeys`
   规范化成「逗号 + 空格」——否则 `keys=",,"` 拆完是空数组、会被当成**常驻注入**（每回合全文
   进提示词），而列表显示"有关键词"。改语义时同步更新 `skills/novel-cards/SKILL.md` 与 README。
+- **状态层（变量树）的四条口径**（`domain/stateUpdate.ts` + `store` 的 append 路径）：
+  ① **先剥块、后应用**：`<UpdateVariable>` 是模型写在正文里的协议，`appendChapterBody` 先把它抠掉再
+  写正文，**正文写成功之后**才应用 patch——反过来的话正文写失败会留下"状态变了但正文没落盘"。
+  剥块是大小写不敏感、多块按顺序应用。
+  ② **status 只认协议**：`delta` 只作用于**已存在的数字**（打在字符串上会被拒并说明），`path` 必须以
+  `/` 开头，`_` 开头的字段只读，数组用 `-` 表示追加。刻意放宽的一点：`replace` 命中不存在的路径会
+  **创建**（模型经常直接写新键），日志里记为 `created`。被拒的一律进 `rejected`，**绝不静默忽略**。
+  ③ **状态与预设无关**：`## 当前状态` 刻意放在 `story_string` 的 if/else **之外**（与全书大纲同一种
+  待遇）——模板管"设定怎么呈现"，状态是模型必须维持的事实，不能被一个没引用它的模板吞掉。
+  ④ **日志只是给人看的**：`state-log.jsonl` 是 append-only，写失败**不阻断**状态更新（吞异常）；
+  `clear` 必须 `confirm=true`。
 - **自检的子 agent（`ctx.subagents`）四条实测口径**：DSH 里**没有持久后台 agent**——只有
   `start(provider, request)` → `{ id, result, dispose }` 的一次性 run（`dsh-base` 提供 `spawn` / `fork`），
   `ctx.jobs` 也是进程内的（官方 README：进程死则 job 死）。所以"每章自检"就是每章起一个干净上下文的

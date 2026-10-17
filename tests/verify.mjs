@@ -140,6 +140,7 @@ assert.deepEqual(toolNames, [
   "novel_review",
   "novel_skill",
   "novel_source",
+  "novel_state",
 ]);
 ok(`${toolNames.length} novel_* tools visible to the model`, toolNames.join(", "));
 
@@ -1644,6 +1645,71 @@ step("sources");
   const disabled = await call("novel_source", { action: "disable", source: importedSource.details.source.id });
   assert.equal(disabled.details.source.enabled, false, "disable 应改到记录上");
   ok("world book import: classified into channels and merged with provenance");
+}
+// ── 状态层：手工设树 / 正文里的 <UpdateVariable> 自动剥离与应用 / 日志 / 简报
+step("state");
+{
+  await call("novel_state", {
+    action: "set",
+    project: reviewProject,
+    tree: JSON.stringify({ 世界: { 当前时间: "未知" }, 主角: { 姓名: "林晚", 生命: 100 } }),
+  });
+  const shown = await call("novel_state", { action: "show", project: reviewProject });
+  assert.ok(shown.summary.includes("世界.当前时间"), "show 要渲染出状态树");
+  assert.equal(shown.details.tree.主角.生命, 100, "树要按 JSON 存取");
+
+  // 模型把协议块写在正文末尾：正文只留小说，patch 应用到状态树
+  const stateChapter = await call("novel_chapter", {
+    action: "create",
+    title: "状态章",
+    project: reviewProject,
+  });
+  const stateChapterId = stateChapter.details?.chapter?.id ?? stateChapter.details?.chapter_id;
+  await call("novel_chapter", {
+    action: "append",
+    project: reviewProject,
+    chapter: stateChapterId,
+    text:
+      "灯芯爆了一下。\n\n" +
+      '<UpdateVariable>\n<Analysis>主角受伤，生命-5。</Analysis>\n<JSONPatch>' +
+      '[{"op":"delta","path":"/主角/生命","value":-5},' +
+      '{"op":"replace","path":"/世界/当前时间","value":"次日清晨"}]' +
+      "</JSONPatch>\n</UpdateVariable>",
+  });
+  const bodyAfter = await call("novel_chapter", { action: "read", project: reviewProject, chapter: stateChapterId });
+  assert.ok(!JSON.stringify(bodyAfter).includes("UpdateVariable"), "正文里不能留下协议块");
+  assert.ok(JSON.stringify(bodyAfter).includes("灯芯爆了一下"), "正文本身要留下");
+
+  const applied = await call("novel_state", { action: "show", project: reviewProject });
+  assert.equal(applied.details.tree.主角.生命, 95, "delta 要真的落到状态树");
+  assert.equal(applied.details.tree.世界.当前时间, "次日清晨", "replace 要真的落到状态树");
+  const stateLog = await call("novel_state", { action: "log", project: reviewProject });
+  assert.ok(stateLog.summary.includes("update"), "日志里要有这次更新");
+  assert.ok(stateLog.summary.includes("2 applied"), "日志要说明应用了几条");
+
+  // 状态必须进简报（且与预设无关）
+  const stateBrief = await call("novel_context", {
+    project: reviewProject,
+    chapter: stateChapterId,
+    instruction: "继续写",
+  });
+  assert.ok(stateBrief.details.state_chars > 0, "状态要进写作简报");
+
+  // 坏 patch：逐条拒绝并说明原因，不能静默
+  const badPatch = await call("novel_state", {
+    action: "apply",
+    project: reviewProject,
+    patch: '[{"op":"delta","path":"/主角/姓名","value":1},{"op":"replace","path":"缺斜杠","value":1}]',
+  });
+  assert.equal(badPatch.details.rejected.length, 2, "两条坏操作都要被拒");
+  assert.ok(badPatch.summary.includes("Rejected"), "摘要要点名被拒的操作");
+
+  await assert.rejects(
+    () => call("novel_state", { action: "clear", project: reviewProject }),
+    /confirm/,
+    "clear 必须先问用户",
+  );
+  ok("state: set / auto-apply from prose / log / brief / rejected");
 }
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 

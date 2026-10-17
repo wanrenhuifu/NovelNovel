@@ -22,6 +22,14 @@ import {
 } from "./domain/sourceImport";
 import { normalizeLoreKeys } from "./domain/prompt";
 import { computeReorder } from "./domain/reorder";
+import {
+  applyPatch,
+  extractUpdateBlocks,
+  parseInitvar,
+  parseUpdateBlock,
+  renderState,
+  type StateTree,
+} from "./domain/stateUpdate";
 import { searchChapters, type SearchMatch } from "./domain/search";
 import { countWords, uid } from "./domain/utils";
 import type { Context, ToolRunContext } from "./contract";
@@ -380,6 +388,14 @@ export class NovelStore {
 
   private sourcesIndexFile(id: string): string {
     return `${this.sourcesDir(id)}/index.json`;
+  }
+
+  private stateFile(id: string): string {
+    return `${this.projectDir(id)}/state.json`;
+  }
+
+  private stateLogFile(id: string): string {
+    return `${this.projectDir(id)}/state-log.jsonl`;
   }
 
   private sourceFile(id: string, sourceId: string): string {
@@ -1726,7 +1742,10 @@ export class NovelStore {
     chapterId: string,
     text: string,
   ): Promise<Chapter> {
-    return withStaleRetry(async () => {
+    // 模型会把 `<UpdateVariable>…` 写在正文末尾：**先剥下来**（正文只留小说），
+    // 写成功之后再应用状态——顺序很重要：正文写失败就不该改状态。
+    const { body: appendText, blocks: updateBlocks } = extractUpdateBlocks(text);
+    const appended = await withStaleRetry(async () => {
       const { text: current, basis } = await this.readChapterBodyVersioned(
         session,
         projectId,
@@ -1734,10 +1753,156 @@ export class NovelStore {
       );
       const joined =
         current.length === 0
-          ? text
-          : current.replace(/\n*$/, "") + "\n\n" + text.replace(/\n*$/, "") + "\n";
+          ? appendText
+          : current.replace(/\n*$/, "") + "\n\n" + appendText.replace(/\n*$/, "") + "\n";
       return this.writeChapterBody(session, projectId, chapterId, joined, basis);
     });
+    if (updateBlocks.length > 0) {
+      await this.applyStateUpdate(session, projectId, updateBlocks, chapterId);
+    }
+    return appended;
+  }
+
+  // ── 状态层（MVU 兼容）────────────────────────────────────────────────
+  // 变量树落 `state.json`，变更落 `state-log.jsonl`（append-only，人可读）。
+  // 正文里的 `<UpdateVariable>` 在 append 时被剥掉并应用——见 appendChapterBody。
+
+  async readState(
+    session: FsSession,
+    projectId: string,
+  ): Promise<{ tree: StateTree; updatedAt: number | null }> {
+    const { value } = await this.readJsonVersioned<{ tree?: StateTree; updatedAt?: number }>(
+      this.stateFile(projectId),
+      session,
+    );
+    return { tree: value?.tree ?? {}, updatedAt: value?.updatedAt ?? null };
+  }
+
+  /** 用某个资料源的 `[initvar]` 初始化状态树（同一份源重复初始化 = 覆盖，日志里会说明） */
+  async initStateFromSource(
+    session: FsSession,
+    projectId: string,
+    sourceId: string,
+  ): Promise<{ tree: StateTree; keys: number; sourceName: string }> {
+    const source = await this.readSource(session, projectId, sourceId);
+    if (source === undefined) throw new Error(`没有这个资料源：${sourceId}`);
+    const text = source.payload.initvarText.trim();
+    if (text === "") {
+      throw new Error(`资料源「${source.record.name}」没有状态初值（导入时没判出 state 通道的条目）`);
+    }
+    const tree = parseInitvar(text);
+    await this.saveState(session, projectId, tree);
+    await this.appendStateLog(projectId, session, {
+      at: Date.now(),
+      chapter: null,
+      kind: "init",
+      note: `from source ${source.record.name}`,
+      applied: [],
+      rejected: [],
+    });
+    return { tree, keys: Object.keys(tree).length, sourceName: source.record.name };
+  }
+
+  async saveState(session: FsSession, projectId: string, tree: StateTree): Promise<void> {
+    await withStaleRetry(async () => {
+      const { basis } = await this.readJsonVersioned(this.stateFile(projectId), session);
+      await this.ops.writeJson(
+        this.stateFile(projectId),
+        { version: 1, tree, updatedAt: Date.now() },
+        session,
+        basis,
+      );
+    });
+  }
+
+  /** 应用一批已经拆好的 `<UpdateVariable>` 块；返回逐条结果（工具的 summary 要用） */
+  async applyStateUpdate(
+    session: FsSession,
+    projectId: string,
+    blocks: string[],
+    chapterId: string | null,
+  ): Promise<{
+    applied: { op: string; path: string; created?: boolean }[];
+    rejected: { op: string; path: string; reason: string }[];
+    errors: string[];
+    tree: StateTree;
+  }> {
+    const current = await this.readState(session, projectId);
+    let tree = current.tree;
+    const applied: { op: string; path: string; created?: boolean }[] = [];
+    const rejected: { op: string; path: string; reason: string }[] = [];
+    const errors: string[] = [];
+    const analyses: string[] = [];
+    for (const block of blocks) {
+      const parsed = parseUpdateBlock(block);
+      if (parsed.error !== undefined) {
+        errors.push(parsed.error);
+        continue;
+      }
+      if (parsed.analysis !== "") analyses.push(parsed.analysis);
+      const outcome = applyPatch(tree, parsed.patch);
+      tree = outcome.tree;
+      applied.push(...outcome.applied);
+      rejected.push(...outcome.rejected);
+    }
+    if (applied.length > 0) await this.saveState(session, projectId, tree);
+    await this.appendStateLog(projectId, session, {
+      at: Date.now(),
+      chapter: chapterId,
+      kind: "update",
+      analysis: analyses.join("\n"),
+      applied,
+      rejected,
+      ...(errors.length > 0 ? { errors } : {}),
+    });
+    return { applied, rejected, errors, tree };
+  }
+
+  async readStateLog(
+    session: FsSession,
+    projectId: string,
+    limit = 20,
+  ): Promise<Record<string, unknown>[]> {
+    const text = await this.ops.readTextOrNull(this.stateLogFile(projectId), session);
+    if (text === null || text === undefined) return [];
+    const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
+    const tail = limit > 0 ? lines.slice(-limit) : lines;
+    return tail.flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  /** 日志是 append-only：读-追加-写（带 CAS），失败不阻断状态更新本身 */
+  private async appendStateLog(
+    projectId: string,
+    session: FsSession,
+    entry: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await withStaleRetry(async () => {
+        const { value, basis } = await this.readJsonVersioned<never>(
+          this.stateLogFile(projectId),
+          session,
+        );
+        void value;
+        const existing =
+          (await this.ops.readTextOrNull(this.stateLogFile(projectId), session)) ?? "";
+        const next = `${existing}${existing === "" || existing.endsWith("\n") ? "" : "\n"}${JSON.stringify(entry)}\n`;
+        await this.ops.writeText(this.stateLogFile(projectId), next, session, basis);
+      });
+    } catch {
+      // 日志只是为了让人能回看：写不进去不该让「状态已更新」变成失败
+    }
+  }
+
+  /** 供简报使用：渲染后的状态文本（没有状态时返回空串） */
+  async stateForPrompt(session: FsSession, projectId: string): Promise<string> {
+    const { tree } = await this.readState(session, projectId);
+    return Object.keys(tree).length === 0 ? "" : renderState(tree);
   }
 
   async updateChapterMeta(

@@ -119,7 +119,7 @@ const toolNames = ctx.tools
   .schemas()
   .map((schema) => schema.name)
   .filter((name) => name.startsWith("novel_"));
-check("从解包副本注册的工具数 = 10", toolNames.length === 10, toolNames.sort().join(", "));
+check("从解包副本注册的工具数 = 11", toolNames.length === 11, toolNames.sort().join(", "));
 
 rmSync(packDir, { recursive: true, force: true });
 rmSync(extractDir, { recursive: true, force: true });

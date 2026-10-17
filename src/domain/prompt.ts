@@ -15,6 +15,11 @@ export interface PromptProject {
   worldbuilding: string;
   authorNote: string;
   lorebook: LoreEntry[];
+  /**
+   * 状态层渲染后的文本（变量树 → 缩进列表）。**无条件**进简报：它和全书大纲一样是
+   * "这本书当前的事实"，不能被 story_string 模板吞掉。
+   */
+  state?: string;
 }
 
 export interface PromptCharacter {
@@ -389,6 +394,13 @@ export function buildSystemPrompt(
     if (project.authorNote.trim()) {
       sections.push(`## 写作要求\n${project.authorNote.trim()}`);
     }
+  }
+
+  // 状态层：刻意放在 story_string 的 if/else **之外**。
+  // 模板管的是"设定怎么呈现"，而状态是模型必须维持的事实（时间/地点/生命/储物袋…），
+  // 一个没引用它的模板不该让状态从简报里消失。
+  if ((project.state ?? "").trim() !== "") {
+    sections.push(`## 当前状态\n${(project.state ?? "").trim()}`);
   }
 
   sections.push(OUTPUT_RULES);

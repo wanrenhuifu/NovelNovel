@@ -73,6 +73,7 @@ const promised = {
   novel_character: ["import", "list", "show", "enable", "disable", "export", "remove", "update"],
   novel_lorebook: ["list", "add", "update", "remove"],
   novel_source: ["list", "show", "entries", "import", "enable", "disable"],
+  novel_state: ["show", "init", "set", "apply", "log", "clear"],
   novel_preset: ["list", "import", "add", "update", "activate", "deactivate", "remove"],
   novel_skill: ["list", "import", "export", "remove"],
   novel_context: [],

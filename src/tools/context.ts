@@ -86,6 +86,8 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
         const characters = await store.activeCharacters(session, projectId);
         const presetFile = await store.readPresets(session, projectId);
         const preset = store.activePreset(presetFile);
+        // 状态层：变量树渲染成文本后进简报（没有状态就是空串，输出与旧版逐字相同）
+        const stateText = await store.stateForPrompt(session, projectId);
 
         const prevCount = clamp(args.prev_chapters ?? config.defaultPrevChapterCount, config.maxPrevChapterCount);
         const prevChars = clamp(args.prev_chars ?? config.defaultPrevChapterChars, config.maxPrevChapterChars);
@@ -174,6 +176,7 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
             worldbuilding: project.worldbuilding,
             authorNote: project.authorNote,
             lorebook,
+            state: stateText,
           },
           characters.map((character) => ({
             name: character.name,
@@ -274,6 +277,7 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
             injected_entries: injected.map((entry) => entry.name),
             ...(truncated.length > 0 ? { truncated_entries: truncated } : {}),
             eligible_lore_entries: eligible.length,
+          state_chars: stateText.length,
             characters: characters.map((character) => character.name),
             target_words: project.targetWords ?? null,
             progress: {

@@ -177,7 +177,7 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 - 客户端半边：`npm run test:primitives` 会**从安装里的前端产物把外壳的静态模块表挖出来**，
   核对我们的 `require` 说明符都在表里（0.2.1 起 `dsh-client-ui-primitives` / `-ui-slots`
   **不再是独立 npm 包**，被打进了 `dsh-web-frontend` 的 bundle，但模块表里两个键都还在）。
-- 端到端：`npm run test:dsh` 67 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
+- 端到端：`npm run test:dsh` 68 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
   schema 都由 harness 校验）；真浏览器里也看过面板（见上面「侧栏面板」一节）。
 
 历史记录（保留，但已不是当前结论）：`0.2.0-rc.2`、`0.1.5-rc.1`（npm `latest`，子包 `0.1.5-rc.2`）、
@@ -206,6 +206,7 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 | `novel_character` | SillyTavern 角色卡（PNG/JSON，V1/V2/V3）导入、查看、参与开关、再导出 PNG、移除 |
 | `novel_source` | **资料源**（现代社区卡 / 独立世界书）：导入（**拆解 + 按通道分类**：设定 / 文风 / 玩法规则 / 状态初值 / 角色档案 / 素材，可注入的并入世界书并记来源，状态与素材只读保留）、列表、详情、启用/停用，以及 `entries` **世界书浏览**（按通道 / 是否常驻 / 关键词过滤、分页；给 `chapter` 时逐条说明**为什么**会/不会进这一章的简报） |
 | `novel_lorebook` | 世界观词条维护（带关键词=命中才注入，无关键词或 `constant`=常驻注入） |
+| `novel_state` | **状态层**（MVU 兼容的变量树）：查看、用某个资料源的 `[initvar]` 初始化、手工 `set` / `apply`（JSON Patch）、`log`（最近的变更）、`clear`（要 `confirm`）。模型写在正文里的 `<UpdateVariable>` 块会被自动剥离、应用并记账，渲染后的状态**无条件**进写作简报 |
 | `novel_preset` | 写作预设导入（SillyTavern JSON）/ 手写 / 编辑 / 激活 / 停用 |
 | `novel_skill` | 项目级写作方法技能：列出 / 导入技能包（JSON）/ 导出分享 / 删除 |
 | `novel_context` | **写作前必调**：组装本次的写作简报（系统提示词 + 指令块 + 注入清单 + 参与角色 + 写作进度） |
@@ -627,7 +628,7 @@ npm run build       # esbuild 打包两个半边：lib/index.js（宿主）+ lib
 npm run typecheck   # tsc -p .（严格模式，零错误）
 npm test            # 9 个纯逻辑单测（卡解析 / 卡导出往返 / 预设+提示词 / 自检与词条治理 / 检索 / 排序 / 技能包 / 字数与词条匹配 / …）+ 5 个客户端单测
 npm run test:guard  # 旧 harness 副本必须被拒绝加载（不需要装插件）
-npm run test:dsh    # 端到端验证 67 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
+npm run test:dsh    # 端到端验证 68 项（默认 profile: nn，用 DSH_TEST_PROFILE 覆盖）
 npm run test:race   # 并发交错：CAS 真的挡住了吗（单次调用测不出静默覆盖）
 npm run test:edge   # 边界语义：章节引用优先级 / keys 规范化 / 破坏性操作闸 / 半成品状态的点名
 npm run test:sandbox    # 真实 sandboxPolicy：伪造 Session 会被拒 + 必须透传真 Session
@@ -666,7 +667,7 @@ SkillRegistry + observation policy）并驱动全部工具：作品/章节/词�
 （技能包导入→列出→导出→再导入→删除，含手写技能不被覆盖、校验失败不写一半）/命令处理器/配置校验/
 工作区边界与损坏文件容错（坏作品目录、坏角色卡、索引缺失、拒绝覆盖已有文件、追加空白保真、
 `position`/`limit` 边界、同名预设）/观察记录归属/真分发链路（`ctx.tools.execute`：参数校验 + 输出
-schema）/面板写入的记账/卸载清理/系统提示词段，共 67 项检查，不调用模型。其中**自检那一段用一个假的 `subagents`
+schema）/面板写入的记账/卸载清理/系统提示词段，共 68 项检查，不调用模型。其中**自检那一段用一个假的 `subagents`
 服务**：真起子 agent 就要调模型，而这里要验的是我们这一半——传出去的 spec（材料齐不齐、
 子 agent 的权限有没有被收空、persona 与 `outputSchema` 对不对）、拿回来之后的处理
 （连败计数落盘、坏形状降级、只读不写词条）；`outputSchema` 本身还额外过了一遍 harness
