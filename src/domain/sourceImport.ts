@@ -150,6 +150,40 @@ export function joinRules(entries: ClassifiedEntry[]): string {
     .join("\n\n---\n\n");
 }
 
+/**
+ * 这条 `state` 条目的内容**真的是一棵变量树**吗？
+ *
+ * 实测坑：《道渊》的 `变量列表` 名字像状态，内容却是 MVU 的**显示模板**
+ * （`<status_current_variables>{{format_message_variable::stat_data}}</status_current_variables>`）。
+ * 把它当树拼进 `initvarText` 会让解析器在第 1 行（`---`）就炸——所以判据必须是**内容形状**，不是名字。
+ */
+export function looksLikeInitvar(content: string): boolean {
+  const text = content.trim();
+  if (text === "") return false;
+  // 带 XML 标签的是显示/命令模板，不是数据
+  if (/<[a-z_][a-z0-9_]*[\s/>]/i.test(text)) return false;
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && line !== "---" && !line.startsWith("#"));
+  if (lines.length < 2) return false;
+  // 列表项不是树；每一行都必须是 `key:`（允许行尾有值）
+  if (lines.some((line) => line.startsWith("-"))) return false;
+  return lines.every((line) => /^[^:：]+:(\s|$)/.test(line));
+}
+
+/** 从 state 通道里挑出真正的初值树（最长的那条），并给出被跳过的条目名 */
+export function pickInitvar(entries: { name: string; content: string; channel: Channel }[]): {
+  text: string;
+  skipped: string[];
+} {
+  const stateEntries = entries.filter((entry) => entry.channel === "state" && entry.content.trim() !== "");
+  const trees = stateEntries.filter((entry) => looksLikeInitvar(entry.content));
+  const skipped = stateEntries.filter((entry) => !looksLikeInitvar(entry.content)).map((entry) => entry.name);
+  const best = [...trees].sort((a, b) => b.content.length - a.content.length)[0];
+  return { text: best?.content.trim() ?? "", skipped };
+}
+
 /** state 通道原文（通常只有 `[initvar]` 一条） */
 export function joinState(entries: ClassifiedEntry[]): string {
   return entries
@@ -279,7 +313,7 @@ export function decomposeCard(
     },
     entries,
     rules: joinRules(entries),
-    initvarText: joinState(entries),
+    initvarText: pickInitvar(entries).text,
     notes,
   };
 }

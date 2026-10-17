@@ -16,8 +16,8 @@ import {
   formatImportReport,
   INJECTABLE_CHANNELS,
   joinRules,
-  joinState,
   parseWorldBook,
+  pickInitvar,
   type DecomposedSource,
 } from "./domain/sourceImport";
 import { normalizeLoreKeys } from "./domain/prompt";
@@ -898,7 +898,7 @@ export class NovelStore {
         meta: null,
         entries,
         rules: joinRules(entries),
-        initvarText: joinState(entries),
+        initvarText: pickInitvar(entries).text,
         notes,
       };
       kind = "lore-book";

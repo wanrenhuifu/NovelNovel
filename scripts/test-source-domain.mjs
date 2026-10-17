@@ -7,7 +7,7 @@ import { bundleSource } from "./bundle-source.mjs";
 
 const { module } = await bundleSource(
   "source",
-  'export { classifyEntry, classifyEntries, channelCounts, joinRules, joinState, decomposeCard, parseWorldBook, formatImportReport, CHANNEL_LABEL, INJECTABLE_CHANNELS } from "./src/domain/sourceImport";\n',
+  'export { classifyEntry, classifyEntries, channelCounts, joinRules, joinState, looksLikeInitvar, pickInitvar, decomposeCard, parseWorldBook, formatImportReport, CHANNEL_LABEL, INJECTABLE_CHANNELS } from "./src/domain/sourceImport";\n',
 );
 const {
   classifyEntry,
@@ -15,6 +15,8 @@ const {
   channelCounts,
   joinRules,
   joinState,
+  looksLikeInitvar,
+  pickInitvar,
   decomposeCard,
   parseWorldBook,
   formatImportReport,
@@ -217,6 +219,29 @@ check(
   keptFlags[0].constant === true && keptFlags[0].position === "before_char",
   JSON.stringify({ constant: keptFlags[0].constant, position: keptFlags[0].position }),
 );
+
+// ── 初值树判定：真卡里「变量列表」是显示模板，不是树 ──────────────
+console.log("\n--- 初值树判定（真卡踩过的坑）---");
+const templateEntry = {
+  name: "变量列表",
+  channel: "state",
+  content: "---\n<status_current_variables>\n{{format_message_variable::stat_data}}\n</status_current_variables>",
+};
+const treeEntry = {
+  name: "[initvar] 初始",
+  channel: "state",
+  content: "世界:\n  当前时间: 未知\n  遭遇冷却: 20\n主角:\n  生命: 100\n  $器灵台词: []",
+};
+check("显示模板不被当成树", looksLikeInitvar(templateEntry.content) === false);
+check("真初值树认得出", looksLikeInitvar(treeEntry.content) === true);
+const pickedInit = pickInitvar([templateEntry, treeEntry]);
+check(
+  "pickInitvar 选中树、跳过模板",
+  pickedInit.text.startsWith("世界:") && pickedInit.skipped.includes("变量列表"),
+  JSON.stringify(pickedInit.skipped),
+);
+check("只有模板时给空串（不是坏树）", pickInitvar([templateEntry]).text === "");
+check("列表项不算树", looksLikeInitvar("a:\n- 一\n- 二") === false);
 
 console.log(`\n${failed === 0 ? "全部通过" : `${String(failed)} 项失败`}：${String(passed + failed)} 项检查`);
 process.exit(failed === 0 ? 0 : 1);

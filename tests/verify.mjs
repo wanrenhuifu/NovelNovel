@@ -1709,6 +1709,17 @@ step("state");
     /confirm/,
     "clear 必须先问用户",
   );
+
+  // 从资料源的 `[initvar]` 播种（e2e 那本世界书里有一条「[initvar] 初始」）
+  await call("novel_state", { action: "clear", project: reviewProject, confirm: true });
+  // 资料源是在**当前作品**里导入的（sources 那一段没传 project），所以这里也不传
+  const sourceList = await call("novel_source", { action: "list" });
+  const anySource = sourceList.details.sources[0];
+  const seededState = await call("novel_state", { action: "init", source: anySource.id });
+  assert.ok(seededState.details.keys >= 1, "initvar 要能播种出变量树");
+  const seededShow = await call("novel_state", { action: "show", project: reviewProject });
+  assert.equal(seededShow.details.tree.世界.当前时间, "未知", "播种出来的树要能读回");
+
   ok("state: set / auto-apply from prose / log / brief / rejected");
 }
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
