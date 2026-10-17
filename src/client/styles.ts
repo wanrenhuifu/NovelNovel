@@ -379,10 +379,9 @@ export const CSS = `
 .nnv-body-headline { display: flex; align-items: center; gap: 8px; }
 .nnv-body-headline .nnv-spacer { flex: 1 1 auto; }
 
-/* 章标题也交给衬线体：与正文同一套字形，标题与正文才像"同一本书里的东西" */
+/* 章标题：只放大、加重，不换字体（与正文同一套无衬线） */
 .nnv-body-title {
   margin: 0;
-  font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
   font-size: 1.45em;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -493,12 +492,10 @@ export const CSS = `
 
 .nnv-read { flex: 1 1 auto; overflow: auto; padding: 34px 26px 96px; scroll-behavior: smooth; }
 
-/* 正文用**衬线体**：这是"像一本书"最有效的一步——界面其余部分保持无衬线，
-   阅读区换成衬线，中文长文的观感差别非常明显（也是阅读类产品的通行做法）。
-   列宽/边距只由 .nnv-page 决定：这里再写一份 max-width 会和它打架（同权重看顺序，
-   改哪一份都可能"看不出效果"——这个坑在 .nnv-bar 上已经踩过一次）。 */
+/* **正文不换衬线体**：试过 Georgia + 宋体兜底，实测"不如无衬线好看"（用户反馈）——
+   中文在 17px 下宋体的笔画偏细、和界面的无衬线字形混在一起显脏。字号/行距保留。
+   列宽/边距只由 .nnv-page 决定：这里再写一份 max-width 会和它打架（同权重看顺序）。 */
 .nnv-prose {
-  font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
   font-size: calc(var(--dsh-content-font-size, 14px) + 3px);
   line-height: 2;
   letter-spacing: 0.01em;
