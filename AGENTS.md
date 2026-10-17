@@ -44,7 +44,7 @@ npm run test:hygiene                # 测试不许污染用户 profile + **每�
 npm run test:dsh                    # 65 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
-npm run test:primitives             # 从首方组件库 import 的名字必须真实存在（写错会把整棵 React 树弄崩）
+npm run test:primitives             # **升级 DSH 后的第一道闸**：从安装里的前端产物挖出外壳静态模块表，核对我们的 require 说明符都在表里；再核对 primitives 的导出名（0.2.1 起该包并入前端 bundle，导出名核对降级为"名字出现过"）
 npm run test:tokens                 # 面板用的 CSS 变量必须在首方产物里存在
 npm run test:routes                 # Web 路由（读+写）：状态码、错误分级、内容级 CAS、同源校验、不泄露绝对路径
 npm run test:sandbox                # 真实 sandboxPolicy：伪造 Session 会被拒 + store 必须透传真品
@@ -174,7 +174,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   产物形态是经典 script `window.__ModuleLoader__.load({id, factory})`（**不是 ESM**），
   `require` 的说明符必须是外壳**静态模块表**的精确键——写错只在**浏览器 console** 报
   `missed the module table`，服务端完全看不到。那份表的唯一来源是
-  `scripts/client-platform-modules.mjs`（实测取自 `dsh-web-frontend/dist/assets/index-*.js` 的 `rM()`；
+  `scripts/client-platform-modules.mjs`（**别手抄**：`test:primitives` 会从 `dsh-web-frontend/dist/assets/index-*.js` 里锚定我们某个说明符、再按花括号配平切出那张表字面量来比对——压缩后的函数名每个版本都变，`rM()` 只是 0.2.0 那一版的名字；0.2.1 起表里多了 `zod` 与 `@tanstack/react-virtual`，而 `dsh-client-ui-primitives`/`-ui-slots` 已不再是独立 npm 包、被打进前端 bundle，模块表里两个键仍在；
   **升级 DSH 后第一个要复核的就是它**）。清单里 `dsh.client.inject` 列的平台包**不要**写进
   `peerDependencies`：它们由外壳的静态表在浏览器里提供，不走 Node 解析（写进去反而会让 Desktop 的
   `routeLinked` 去应用安装里找它们）。
@@ -221,7 +221,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   （本地后端要求先读后写），所以 `fsx.ts` 先 `stat`：已存在用 `replaceIfVersion`（带 stale 校验），
   不存在用 `createIfAbsent`，写完 `emit('fs/observed')` 并**把触发调用的 exec 作为第三参传入**
   （`FsSession.actor`）——observation policy 只对能解析出 session 的 actor 记录观察
-  （`if (owner) this.set(...)`，owner 取自 `actor?.agent?.session`，0.2.0-rc.2 仍然如此），不传就等于
+  （`if (owner) this.set(...)`，owner 取自 `actor?.agent?.session`，0.2.1-rc.2 仍然如此），不传就等于
   这些写入对「先读后写」策略不存在，首方 `write`/`edit` 之后会被要求先读一遍。`writeText` 的第五参
   是 `SandboxExecutionPolicy`：**会话策略要透传**（`ctx.get('sandboxPolicy')?.resolve({ session })`），
   不传则 fs 后端退回部署默认（`dsh-fs-sandbox` 里 `sandboxPolicy ?? ctx.sandboxPolicy.resolve()`）。
@@ -448,7 +448,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   所以模型想找第 3 章埋的伏笔时只能自己 `action=search` 或 `read`。
   公开分发形态（npm 发布 + `dsh.compatibility`）也没做——注意 `dsh.compatibility` 这个字段
   **在 DSH 里并不存在**（实测全 asar 零命中），真机制是 `peerDependencies` 的版本区间 +
-  profile 的 `compatibility.json` 例外表，本包现在全是 `"*"`，`0.2.0-rc.2` 下已通过。
+  profile 的 `compatibility.json` 例外表，本包现在全是 `"*"`，`0.2.1-rc.2` 下已通过（`0.2.0-rc.2` 也验过）。
 - **面板已在真浏览器里跑通（`nn` + `dsh web`），但还没在 `desktop` profile 里过一遍**：
   实测流程（可复用）：`dsh --profile nn --host 127.0.0.1 --port <p> --no-open`（它会打印**带 token 的 URL**，
   不带 token 访问只会拿到 401）→ 在会话里跑一次 `novel_*` 工具或 `/novel` 预热工作目录 →

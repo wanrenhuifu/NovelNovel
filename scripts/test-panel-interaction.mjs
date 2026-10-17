@@ -382,7 +382,7 @@ console.log("--- 角色卡与目标字数 ---");
   };
   const { container, calls, unmount } = await mount({ ...baseState, detail });
 
-  const toggle = container.querySelector(".nnv-check");
+  const toggle = container.querySelector(".nnv-toggle");
   check("角色卡有参与开关", toggle !== null);
   if (toggle) await click(toggle);
   check(

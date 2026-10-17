@@ -322,7 +322,7 @@ function ChapterList({
       <div className="nnv-list-head">
         <span>章节</span>
         <span className="nnv-spacer" />
-        <span>{String(chapters.length)}</span>
+        <span className="nnv-count">{String(chapters.length)}</span>
         <Button
           size="sm"
           disabled={busy}
@@ -569,7 +569,7 @@ function CharacterList({
       <div className="nnv-list-head">
         <span>角色卡</span>
         <span className="nnv-spacer" />
-        <span>{String(characters.length)}</span>
+        <span className="nnv-count">{String(characters.length)}</span>
         <Button
           size="sm"
           disabled={busy}
@@ -600,17 +600,18 @@ function CharacterList({
           </div>
         ) : null}
         {characters.map((c) => (
-          <div key={c.id} className="nnv-row nnv-row-char" data-selected={false}>
-            <input
-              type="checkbox"
-              className="nnv-check"
-              checked={c.active}
-              disabled={busy}
-              title={c.active ? "参与写作（设定会进简报）" : "不参与写作"}
-              onChange={(event) => {
-                onToggle(c.id, (event.target as HTMLInputElement).checked);
-              }}
-            />
+          <div
+            key={c.id}
+            className="nnv-row nnv-row-char"
+            data-selected={false}
+            data-active={c.active}
+            title={c.active ? "参与写作（设定会进简报）" : "不参与写作（不会进简报）"}
+          >
+            {/* 首字头像：比"checkbox + 名字"像人。有真头像的卡先只标记，图片要另起一条路由给字节 */}
+            <span className="nnv-avatar" aria-hidden="true">
+              {Array.from(asString(c.name))[0] ?? "?"}
+              {c.hasAvatar ? <span className="nnv-avatar-dot" /> : null}
+            </span>
             <span className="nnv-row-main">
               <span className="nnv-row-title" title={asString(c.description)}>
                 {c.name}
@@ -620,6 +621,20 @@ function CharacterList({
                 {c.hasAvatar ? <span>· 有头像</span> : null}
               </span>
             </span>
+            {/* 参与开关：小胶囊而不是 checkbox——四张卡并排时四个实心方块的视觉重量太大，
+                而且"参与/不参与"自解释，不需要靠 tooltip */}
+            <button
+              type="button"
+              className="nnv-toggle"
+              data-on={c.active}
+              disabled={busy}
+              title={c.active ? "参与写作（设定会进简报）" : "不参与写作（不会进简报）"}
+              onClick={() => {
+                onToggle(c.id, !c.active);
+              }}
+            >
+              {c.active ? "参与" : "不参与"}
+            </button>
             {confirming === c.id ? (
               <span className="nnv-row-actions">
                 <button

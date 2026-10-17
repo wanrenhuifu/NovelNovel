@@ -103,15 +103,24 @@ export const CSS = `
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 9px 14px 7px;
+  padding: 10px 14px 8px;
   font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--dsw-alias-label-tertiary);
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
 .nnv-list-head .nnv-spacer { flex: 1 1 auto; }
+
+/* 计数单独一档：以前它和"＋ 新建"按钮紧贴着，看起来像按钮的一部分 */
+.nnv-count {
+  min-width: 1.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.nnv-list-head > button:last-child { margin-left: 6px; }
 
 .nnv-list-body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 6px 8px 12px; }
 .nnv-list-empty { display: block; padding: 6px 8px; }
@@ -252,7 +261,58 @@ export const CSS = `
 .nnv-input:focus { outline: none; border-color: var(--dsw-alias-brand-primary); }
 .nnv-input-sm { width: 8em; }
 
-.nnv-check { flex: 0 0 auto; accent-color: var(--dsw-alias-brand-primary); }
+/* 角色卡：首字头像（有真头像的加一个小圆点标记）。比"checkbox + 名字"像人。 */
+.nnv-avatar {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-l2);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dsw-alias-label-secondary);
+  user-select: none;
+}
+
+.nnv-avatar-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 1.5px var(--dsw-specific-sidebar-fill);
+}
+
+/* 不参与写作的卡整体变淡：状态一眼可辨，不必去逐个看 checkbox */
+.nnv-row-char[data-active="false"] .nnv-row-title { color: var(--dsw-alias-label-tertiary); }
+.nnv-row-char[data-active="false"] .nnv-avatar { opacity: 0.55; }
+
+/* 参与开关的胶囊态：参与 = 品牌色描边，不参与 = 灰描边（行本身还会整体变淡） */
+.nnv-toggle {
+  flex: 0 0 auto;
+  padding: 1.5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.nnv-toggle[data-on="true"] {
+  color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.nnv-toggle:disabled { opacity: 0.5; cursor: default; }
 .nnv-row-char { cursor: default; padding-top: 5px; padding-bottom: 5px; }
 .nnv-file { display: none; }
 
@@ -304,16 +364,29 @@ export const CSS = `
   box-sizing: border-box;
 }
 
+/* 分隔线画在**列**上，不画在整个右栏上：横跨 855px 的线配上中间 640px 的文字块，
+   视觉上像"线跑出去了"。收到 .nnv-page 上，线和文字同宽。 */
 .nnv-body-head {
   flex: 0 0 auto;
   padding: 15px 0 0;
+}
+
+.nnv-body-head .nnv-page {
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
 .nnv-body-headline { display: flex; align-items: center; gap: 8px; }
 .nnv-body-headline .nnv-spacer { flex: 1 1 auto; }
 
-.nnv-body-title { margin: 0; font-size: 1.28em; font-weight: 650; letter-spacing: 0.01em; }
+/* 章标题也交给衬线体：与正文同一套字形，标题与正文才像"同一本书里的东西" */
+.nnv-body-title {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
+  font-size: 1.45em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
 
 .nnv-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 9px 0 11px; }
 
@@ -418,13 +491,17 @@ export const CSS = `
   font-size: 12.5px;
 }
 
-.nnv-read { flex: 1 1 auto; overflow: auto; padding: 26px 26px 64px; scroll-behavior: smooth; }
+.nnv-read { flex: 1 1 auto; overflow: auto; padding: 34px 26px 96px; scroll-behavior: smooth; }
 
+/* 正文用**衬线体**：这是"像一本书"最有效的一步——界面其余部分保持无衬线，
+   阅读区换成衬线，中文长文的观感差别非常明显（也是阅读类产品的通行做法）。
+   列宽/边距只由 .nnv-page 决定：这里再写一份 max-width 会和它打架（同权重看顺序，
+   改哪一份都可能"看不出效果"——这个坑在 .nnv-bar 上已经踩过一次）。 */
 .nnv-prose {
-  max-width: 40em;
-  margin: 0 auto;
-  line-height: 1.85;
-  font-size: calc(var(--dsh-content-font-size, 14px) + 1px);
+  font-family: Georgia, "Times New Roman", "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
+  font-size: calc(var(--dsh-content-font-size, 14px) + 3px);
+  line-height: 2;
+  letter-spacing: 0.01em;
 }
 
 .nnv-prose > p {

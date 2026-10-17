@@ -145,22 +145,25 @@ dsh 把**启动时所在的目录**当作工作区根：小说数据落在 `<那
 
 ## 兼容性
 
-**当前结论：适配 DSH 桌面端 `@deepseek-ai/dsh@0.2.0-rc.2`（DSH Desktop，Node 24.18.1）。**
-核查方式（都可复跑）：
+**当前结论：适配 DSH 桌面端 `@deepseek-ai/dsh@0.2.1-rc.2`（DSH Desktop，Node 24.21 / Electron 44.7）。**
+上一版验的是 `0.2.0-rc.2`（Node 24.18.1），升级后重跑过全量闸门。核查方式（都可复跑）：
 
 - 清单版本门槛用运行中的真品判定：`@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility`
-  跑本包 manifest + 运行时版本 `0.2.0-rc.2` → 无冲突项（不兼容会在安装期就被拒，不会等到运行期）。
-- `src/contract.ts` 镜像的 API 面逐项对照 `0.2.0-rc.2`：`ToolDefinition`/`defineTool`（仍支持
+  跑本包 manifest + 运行时版本 → 无冲突项（不兼容会在安装期就被拒，不会等到运行期）。
+- `src/contract.ts` 镜像的 API 面逐项对照：`ToolDefinition`/`defineTool`（仍支持
   author-only 的 `type:"json"` 与 `isConcurrencySafe`）、`ToolRunContext.agent.session.header.cwd`、
   `ctx.fs` 的读写与 `writeText` 五参签名、`fs/observed` 事件签名、`ctx.skills.register` 的
   runtime rank 250、`ctx.commands`、`ctx.systemPrompt` —— 均无签名差异。
 - “先读后写”策略的归属判定也没变：`dsh-fs-observation-policy` 仍然从 `actor.agent.session`
   推导 owner，所以插件写入照旧记在调用方会话名下。
-- 端到端：`npm run test:dsh` 56 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
-  schema 都由 harness 校验）。
+- 客户端半边：`npm run test:primitives` 会**从安装里的前端产物把外壳的静态模块表挖出来**，
+  核对我们的 `require` 说明符都在表里（0.2.1 起 `dsh-client-ui-primitives` / `-ui-slots`
+  **不再是独立 npm 包**，被打进了 `dsh-web-frontend` 的 bundle，但模块表里两个键都还在）。
+- 端到端：`npm run test:dsh` 65 项全过（其中一组走 `ctx.tools.execute` 真分发，参数与输出
+  schema 都由 harness 校验）；真浏览器里也看过面板（见上面「侧栏面板」一节）。
 
-历史记录（保留，但已不是当前结论）：`0.1.5-rc.1`（npm `latest`，子包 `0.1.5-rc.2`）与
-`0.1.2-rc.1` CLI + `0.1.3-alpha.2` 子包都验证过 40 项。
+历史记录（保留，但已不是当前结论）：`0.2.0-rc.2`、`0.1.5-rc.1`（npm `latest`，子包 `0.1.5-rc.2`）、
+`0.1.2-rc.1` CLI + `0.1.3-alpha.2` 子包都验证过。
 
 `package.json` 的 peerDependencies 用通配 `*`：插件运行时由 `src/harness.ts` 解析 harness 自己的包实例
 （保证与运行中的 harness 同模块实例），不在依赖层面锁版本。`src/contract.ts` 是逐项比对后的手写副本——
