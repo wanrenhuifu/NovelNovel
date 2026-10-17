@@ -196,6 +196,24 @@ export const CSS = `
 }
 
 .nnv-row[data-selected="true"] .nnv-bar-fill { background: var(--dsw-alias-brand-primary); }
+/* 拖拽排序：按下时抓住（grab），拖动中把落点画成一条线。
+   落点线用伪元素画在行内，不占布局高度，所以拖过时列表不跳。 */
+.nnv-row { cursor: default; }
+.nnv-row[data-drag="true"] { opacity: 0.55; cursor: grabbing; }
+.nnv-row[data-drop="before"]::before,
+.nnv-row[data-drop="after"]::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--dsw-alias-brand-primary);
+  border-radius: 2px;
+}
+.nnv-row[data-drop="before"]::before { top: -1px; }
+.nnv-row[data-drop="after"]::after { bottom: -1px; }
+/* 伪元素要相对行定位；行本身是 flex 容器，position: relative 不影响布局 */
+.nnv-row { position: relative; }
 
 /* 行内动作条：默认隐形，悬停/选中该行时才出现——读的时候界面要退到背后 */
 .nnv-row-actions {

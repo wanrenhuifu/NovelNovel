@@ -396,6 +396,42 @@ const chapterFileOf = (id) =>
   );
   check("带 confirm 才真删（文件也没了）", deleted.status === 200 && !existsSync(chapterFileOf(id)), String(deleted.status));
 
+  // 拖拽落点：把一章放到另一章的 before/after——路由层只做参数校验与委派，
+  // 真正的「before/after 语义」在 computeReorder（domain 单测覆盖）。
+  const made1 = await send("/api/novel.chapter", { project: projectId }, { action: "create", title: "拖拽 A" });
+  const made2 = await send("/api/novel.chapter", { project: projectId }, { action: "create", title: "拖拽 B" });
+  const idA = made1.body?.data?.chapter?.id;
+  const idB = made2.body?.data?.chapter?.id;
+  const reordered = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "reorder", chapter: idB, target: idA, position: "before" },
+  );
+  check("reorder → 200", reordered.status === 200, `${String(reordered.status)} ${String(reordered.body?.error?.message ?? "")}`);
+  const orderNow = reordered.body?.data?.order ?? [];
+  check(
+    "reorder 回传新顺序，且 B 在 A 之前",
+    orderNow.indexOf(idB) >= 0 && orderNow.indexOf(idB) === orderNow.indexOf(idA) - 1,
+    JSON.stringify(orderNow),
+  );
+  const badTarget = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "reorder", chapter: idA, target: "不存在的章节", position: "before" },
+  );
+  check("reorder 目标不存在 → 404", badTarget.status === 404, String(badTarget.status));
+  const selfMove = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "reorder", chapter: idA, target: idA, position: "after" },
+  );
+  check("reorder 相对自己 → 400", selfMove.status === 400, String(selfMove.status));
+  const badPosition = await send(
+    "/api/novel.chapter",
+    { project: projectId },
+    { action: "reorder", chapter: idA, target: idB },
+  );
+  check("reorder 缺 position → 400", badPosition.status === 400, String(badPosition.status));
   const unknown = await send("/api/novel.chapter", { project: projectId }, { action: "nope" });
   check("未知 action → 400", unknown.status === 400, String(unknown.status));
 }

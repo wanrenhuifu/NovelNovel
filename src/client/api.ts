@@ -252,6 +252,20 @@ export const api = {
       direction,
     }),
 
+  /** 拖拽落点：把 chapter 放到 target 的 before/after（与 ↑↓ 的 move 语义一致，但可跳位） */
+  reorderChapter: (
+    cwd: string | undefined,
+    project: string | undefined,
+    chapter: string,
+    target: string,
+    position: "before" | "after",
+  ) =>
+    send<{ chapterId: string; placed: string; target: string; order: string[] }>(
+      "api/novel.chapter",
+      { cwd, project },
+      { action: "reorder", chapter, target, position },
+    ),
+
   importCharacter: (cwd: string | undefined, project: string | undefined, file: File) =>
     upload<ImportedCharacter>(
       "api/novel.character",

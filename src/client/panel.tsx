@@ -121,6 +121,7 @@ export function NovelPanel(): ReactNode {
               onRename={actions.renameChapter}
               onDelete={actions.deleteChapter}
               onMove={actions.moveChapter}
+              onReorder={actions.reorderChapter}
             />
             <CharacterList
               characters={characters}
@@ -298,6 +299,7 @@ function ChapterList({
   onRename,
   onDelete,
   onMove,
+  onReorder,
 }: {
   chapters: ChapterSummary[];
   /** 用户选中的章节 id（不是"已加载"的那个：切章期间高亮应当立刻跟随） */
@@ -308,6 +310,8 @@ function ChapterList({
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: "up" | "down") => void;
+  /** 拖拽落点：把 id 放到 target 的 before/after（↑↓ 是这个动作的退化用法） */
+  onReorder: (id: string, target: string, position: "before" | "after") => void;
 }): ReactNode {
   // 体量条按最长章节归一化：不写死"多少字算长"
   const longest = chapters.reduce((max, c) => (c.words > max ? c.words : max), 0);
@@ -316,6 +320,26 @@ function ChapterList({
   const [confirming, setConfirming] = useState<string | null>(null);
   /** 新建章节的行内表单 */
   const [adding, setAdding] = useState<string | null>(null);
+  /**
+   * 拖拽状态。**不用 HTML5 drag-and-drop**：它在触屏上不工作、在 jsdom 里也模拟不出来，
+   * 而鼠标事件两边都能跑（测试里可以真的 dispatch mousedown/mouseenter/mouseup）。
+   * 松手时若从未在别的行上移动过，就当作一次普通点击——所以"点选章节"不受影响。
+   */
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ id: string; position: "before" | "after" } | null>(null);
+
+  useEffect(() => {
+    if (dragId === null) return;
+    const finish = (): void => {
+      if (dropAt !== null && dropAt.id !== dragId) onReorder(dragId, dropAt.id, dropAt.position);
+      setDragId(null);
+      setDropAt(null);
+    };
+    window.addEventListener("mouseup", finish);
+    return () => {
+      window.removeEventListener("mouseup", finish);
+    };
+  }, [dragId, dropAt, onReorder]);
 
   return (
     <nav className="nnv-list">
@@ -431,9 +455,24 @@ function ChapterList({
               key={c.id}
               className="nnv-row"
               data-selected={c.id === selectedId}
+              data-drag={dragId === c.id}
+              data-drop={dropAt !== null && dropAt.id === c.id ? dropAt.position : undefined}
               role="button"
               tabIndex={-1}
               title={asArray<string>(c.tags).length > 0 ? asArray<string>(c.tags).join(" · ") : undefined}
+              onMouseDown={(event) => {
+                // 点在行内按钮/输入框上时不启动拖拽（否则"删除/改名"会变成拖一下）
+                const target = event.target as HTMLElement;
+                if (target.closest("button, input, textarea") !== null) return;
+                setDragId(c.id);
+              }}
+              onMouseOver={(event) => {
+                if (dragId === null || dragId === c.id) return;
+                const rect = event.currentTarget.getBoundingClientRect();
+                const position: "before" | "after" =
+                  event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                setDropAt({ id: c.id, position });
+              }}
               onClick={() => {
                 setConfirming(null);
                 onSelect(c.id);

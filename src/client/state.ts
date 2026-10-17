@@ -45,6 +45,8 @@ export interface PanelActions {
   /** 删除章节；确认对话框在面板侧，点了才会调到这里 */
   deleteChapter(id: string): void;
   moveChapter(id: string, direction: "up" | "down"): void;
+  /** 拖拽落点：放到 target 的 before/after */
+  reorderChapter(id: string, target: string, position: "before" | "after"): void;
   /** 全书目标字数；`null` = 清掉目标 */
   setTargetWords(words: number | null): void;
   /** 从本机选一个 PNG/JSON 角色卡导入（走上传，不经过文件工具） */
@@ -62,6 +64,7 @@ const NO_ACTIONS: PanelActions = {
   renameChapter: () => undefined,
   deleteChapter: () => undefined,
   moveChapter: () => undefined,
+  reorderChapter: () => undefined,
   setTargetWords: () => undefined,
   importCharacter: () => undefined,
   setCharacterActive: () => undefined,
@@ -347,6 +350,13 @@ export function usePanelStore(): { state: PanelState; actions: PanelActions } {
               .then(() => (direction === "up" ? "已上移" : "已下移")),
           "chapter",
         );
+      },
+
+      /** 拖拽落点：把 id 放到 target 的 before/after（可跨多格，↑↓ 只是它的退化用法） */
+      reorderChapter: (id: string, target: string, position: "before" | "after") => {
+        const projectId = activeIdRef.current;
+        if (projectId === null || id === target) return;
+        run(() => api.reorderChapter(undefined, projectId, id, target, position).then(() => "已重排"), "chapter");
       },
 
       setTargetWords: (words: number | null) => {

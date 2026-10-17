@@ -72,6 +72,7 @@ async function mount(stateOverrides) {
     renameChapter: [],
     deleteChapter: [],
     moveChapter: [],
+    reorderChapter: [],
     setTargetWords: [],
     importCharacter: [],
     setCharacterActive: [],
@@ -122,6 +123,9 @@ async function mount(stateOverrides) {
                 },
                 moveChapter: (id, direction) => {
                   calls.moveChapter.push([id, direction]);
+                },
+                reorderChapter: (id, target, position) => {
+                  calls.reorderChapter.push([id, target, position]);
                 },
                 setTargetWords: (words) => {
                   calls.setTargetWords.push(words);
@@ -346,6 +350,44 @@ console.log("--- 章节写操作 ---");
   await unmount();
 }
 
+// ── 拖拽排序：鼠标事件（HTML5 DnD 在 jsdom 里模拟不出来）──────────────
+console.log("--- 拖拽排序 ---");
+{
+  const { container, calls, unmount } = await mount(baseState);
+  const rows = container.querySelectorAll(".nnv-row");
+  check("有 3 行可拖", rows.length === 3);
+
+  // 按住第 1 行 → 移到第 3 行 → 松手
+  await act(async () => {
+    rows[0].dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, clientY: 0 }));
+  });
+  await act(async () => {
+    rows[2].dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true, clientY: 100 }));
+  });
+  await act(async () => {
+    window.dispatchEvent(new window.MouseEvent("mouseup", { bubbles: true }));
+  });
+  // jsdom 里 getBoundingClientRect 全是 0 → 落点判定为 "after"，这里只验接线与参数
+  check(
+    "拖动后调用 reorderChapter(拖的, 落点, 位置)",
+    JSON.stringify(calls.reorderChapter[0]) === JSON.stringify(["c1", "c3", "after"]),
+    JSON.stringify(calls.reorderChapter),
+  );
+  await unmount();
+}
+{
+  // 按下又原地松手：不该触发重排（否则点一下就重排了）
+  const { container, calls, unmount } = await mount(baseState);
+  const rows = container.querySelectorAll(".nnv-row");
+  await act(async () => {
+    rows[1].dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+  });
+  await act(async () => {
+    window.dispatchEvent(new window.MouseEvent("mouseup", { bubbles: true }));
+  });
+  check("原地按下松手不触发重排", calls.reorderChapter.length === 0, JSON.stringify(calls.reorderChapter));
+  await unmount();
+}
 // ── 写操作：正文编辑与保存基准 ─────────────────────────────────────
 console.log("--- 正文编辑 ---");
 {

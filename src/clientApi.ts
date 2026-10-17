@@ -401,6 +401,27 @@ function registerRoutes(
         return json({ data: { chapterId: meta.id, moved: direction } });
       }
 
+      if (action === "reorder") {
+        // 拖拽落点：把 chapter 放到 target 的 before/after。
+        // 语义与 tool 侧的 computeReorder 同一套（targetId + position），不是新能力，只是多了个对外动作。
+        const target = stringField(body.target) ?? "";
+        const position = stringField(body.position) ?? "";
+        if (target === "" || (position !== "before" && position !== "after")) {
+          return failure("bad_request", 'reorder needs "target" and position "before"|"after"', 400);
+        }
+        if (target === meta.id) {
+          return failure("bad_request", "cannot move a chapter relative to itself", 400);
+        }
+        const metas = await store.listChapterMetas(session, projectId);
+        if (!metas.some((item) => item.id === target)) {
+          return failure("not_found", `no chapter "${target}" in this project`, 404);
+        }
+        const ordered = await store.moveChapter(session, projectId, meta.id, target, position);
+        return json({
+          data: { chapterId: meta.id, placed: position, target, order: ordered.map((item) => item.id) },
+        });
+      }
+
       return failure("unknown_action", `unsupported action "${action ?? ""}"`, 400);
     }
 
