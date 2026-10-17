@@ -118,6 +118,11 @@ export function extractLorebookEntries(
         content: replaceMacros(content, charName),
         // 字段缺失视为启用，显式 false 才禁用
         enabled: e.enabled !== false,
+        // ST 的 constant：有关键词也每回合都进（实测这张卡 56 条 / 6.3 万字，丢了等于丢掉卡的核心）
+        ...(e.constant === true ? { constant: true } : {}),
+        ...(e.position === "before_char" || e.position === "after_char"
+          ? { position: e.position }
+          : {}),
       },
     ];
   });

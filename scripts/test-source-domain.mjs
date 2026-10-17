@@ -189,6 +189,34 @@ try {
   threw = String(error.message).includes("认不出");
 }
 check("认不出的形状也明确报错", threw);
+// ── 世界书保真：keys/key 双字段、constant、position ────────────
+console.log("\n--- 世界书保真 ---");
+const twoFieldBook = parseWorldBook(
+  JSON.stringify({
+    entries: {
+      // 实测《道渊》：key 是空数组、真触发词在 keys 里 —— `key ?? keys` 会取到空数组
+      0: { key: [], keys: ["灯火", "界"], content: "灯灭则夜入。", comment: "界" },
+      1: { key: "旧版单键", content: "内容二", comment: "单键" },
+      2: { constant: true, keys: ["x"], content: "规则", comment: "常驻", position: "before_char" },
+    },
+  }),
+);
+check("keys 非空时优先用 keys（不被空数组的 key 覆盖）", twoFieldBook.entries[0].keys === "灯火, 界", twoFieldBook.entries[0].keys);
+check("只有 key（字符串）时也认", twoFieldBook.entries[1].keys === "旧版单键", twoFieldBook.entries[1].keys);
+check(
+  "constant / position 一并带出来（否则 56 条常驻会被当普通关键词条目）",
+  twoFieldBook.entries[2].constant === true && twoFieldBook.entries[2].position === "before_char",
+  JSON.stringify({ constant: twoFieldBook.entries[2].constant, position: twoFieldBook.entries[2].position }),
+);
+const keptFlags = classifyEntries(
+  [{ name: "玄天界宗门生成", keys: "", content: "随机生成宗门", enabled: true, constant: true, position: "before_char" }],
+  [],
+);
+check(
+  "分类不丢 constant / position",
+  keptFlags[0].constant === true && keptFlags[0].position === "before_char",
+  JSON.stringify({ constant: keptFlags[0].constant, position: keptFlags[0].position }),
+);
 
 console.log(`\n${failed === 0 ? "全部通过" : `${String(failed)} 项失败`}：${String(passed + failed)} 项检查`);
 process.exit(failed === 0 ? 0 : 1);

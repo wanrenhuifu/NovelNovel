@@ -101,8 +101,19 @@ export function registerContextTool({ ctx, store, config, defineTool, subagents 
         // 注意 slice(-0) === slice(0) 会取到整章，0 必须单独处理
         const recent = recentChars > 0 ? chapter.content.trim().slice(-recentChars) : "";
 
-        // 前文摘录也参与 lorebook 关键词匹配（与简报组装同一口径）
-        const contextText = [...prev.map((item) => item.text), recent].join("\n");
+        // 参与 lorebook 关键词匹配的文本 = 前文摘录 + 本章已写正文 + **本章目标 / 这一轮的指令**。
+        //
+        // 为什么指令必须算进来：现代卡的触发词几乎全是人名/功法/地名，而它们**第一次出现往往就在
+        // 指令里**（"写林若悠在玉灵宫修炼青云步"）。只看已写正文时，第一章永远匹配不到任何关键词
+        // （正文还是空的），整本 290 条关键词世界书等于全程静默——实测《道渊》就是这样。
+        const contextText = [
+          ...prev.map((item) => item.text),
+          recent,
+          chapter.goal ?? "",
+          args.instruction ?? "",
+        ]
+          .filter((part) => part.trim() !== "")
+          .join("\n");
 
         // 第 6 步的本地治理：先拿到**完整候选池**（召回要全，不漏），
         // 再（可选）让子 agent 做一次只准删的筛选，最后才按条数/字符双上限取前若干条。

@@ -190,7 +190,11 @@ export function rankLoreEntries(
   for (const entry of entries) {
     if (!entry.enabled || !entry.content.trim()) continue;
     const keys = splitLoreKeys(entry.keys).map((k) => normalizeForMatch(k)).filter(Boolean);
-    if (keys.length === 0) {
+    // 常驻有两种来源，语义都是"作者要求每回合都在"：
+    //   ① ST 的 constant=true（**有关键词也常驻**，实测《道渊》56 条 / 6.3 万字）；
+    //   ② 老口径：没有关键词（keys 空），无从触发，只能常驻。
+    // 常驻**不占**关键词条目的预算（与 ST 一致：constant 条目不受 insert 预算约束）。
+    if (entry.constant === true || keys.length === 0) {
       alwaysOn.push(entry);
       continue;
     }
@@ -198,6 +202,13 @@ export function rankLoreEntries(
     if (score > 0) hits.push({ entry, score });
     else skipped.push(entry);
   }
+  // 常驻块按 ST 的 position 排序（before_char 在前），同位置按 id 稳定排序——
+  // 否则同样的词条文件会因读盘顺序不同而产出不同简报。
+  alwaysOn.sort((a, b) => {
+    const rank = (entry: PromptProject["lorebook"][number]): number =>
+      entry.position === "before_char" ? 0 : 1;
+    return rank(a) - rank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
   hits.sort(
     (a, b) => b.score - a.score || (a.entry.id < b.entry.id ? -1 : a.entry.id > b.entry.id ? 1 : 0),
   );

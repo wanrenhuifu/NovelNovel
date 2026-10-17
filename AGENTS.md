@@ -42,7 +42,7 @@ node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘�
 node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
-npm run test:dsh                    # 66 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 67 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives             # **升级 DSH 后的第一道闸**：从安装里的前端产物挖出外壳静态模块表，核对我们的 require 说明符都在表里；再核对 primitives 的导出名（0.2.1 起该包并入前端 bundle，导出名核对降级为"名字出现过"）
@@ -121,7 +121,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `tests/verify.mjs` 端到端（66 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（67 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
   `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
@@ -331,7 +331,14 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 - **角色卡 PNG 再导出**：`domain/export.ts` 把任意来源的卡统一转 V2 结构写 `chara` chunk，有 V3
   rawData 时另写 `ccv3`（读取端 ccv3 优先）；头像非 PNG（或缺失）时用纯色占位图。TS 5.8 下传给
   Blob 的必须是 `Uint8Array<ArrayBuffer>`。
-- **Lorebook 注入语义**：`domain/prompt.ts` 的 `selectLoreEntries` —— 词条 keys 为空 = 常驻注入；
+- **Lorebook 注入语义**：`domain/prompt.ts` 的 `rankLoreEntries` —— **常驻有两种**：`keys` 为空，或
+  ST 的 `constant: true`（**有关键词也常驻**；实测卡里 `constant` 53 条、**作者禁用 22 条**→ 启用 31 条 / 3.36 万字，
+  就是"规则 + 生成器 + 常驻世界"那一层；**别把禁用的也算进去**，我第一版数字就是这么报大的）。
+  常驻**不占**命中条目的条数/字符预算，并按 `position`（`before_char` 在前）稳定排序。
+  命中层默认 24 条 / 24000 字（`maxInjectedLoreEntries` / `maxInjectedLoreChars` 可调，0 = 不限）。
+  **匹配上下文包含本章目标与这一轮的指令**（`tools/context.ts` 的 `contextText`）——只看已写正文时，
+  第一章（正文为空）永远命中不到任何关键词，整本关键词世界书等于全程静默；实测《道渊》补上指令后
+  从 31 条变成 33 条（多出林若悠 / 宫银叶两条人物档案）。
   有 keys 时仅当任一关键词（逗号分隔、**大小写与全半角归一化后**）出现在续写上下文里才注入。
   拆分规则只有 `splitLoreKeys` 一份实现（读取侧与写入侧共用），写入侧由 `normalizeLoreKeys`
   规范化成「逗号 + 空格」——否则 `keys=",,"` 拆完是空数组、会被当成**常驻注入**（每回合全文
@@ -395,7 +402,7 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   **一定会错**，所以每条带 `reason`、将来面板可逐条改。
   实测结果（真卡）：356 条 → 保留 342 条（空条目丢弃）、设定 140 / 角色 188 / 玩法 11 / 状态 2 / 素材 1，
   123 ms 完成；**`[initvar]` 与 `变量列表` 没有被误当词条**。
-  两个待跟进：① 规则条目现在也进了世界书（带 `channel=gameplay`），注入策略要等下一刀；
+  两个待跟进：① 规则条目现在也进了世界书（带 `channel=gameplay` / `constant`），注入策略见「Lorebook 注入语义」；
   ② 面板上传上限 `MAX_UPLOAD_BYTES = 8 MB` **会拒掉这张 10.25 MB 的卡**（工具路径没有这个限制）。
 '
 - **写作预设**：`presetImport.ts` 按字段特征识别裸预设（`content`→system、`story_string`→context、

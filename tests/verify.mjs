@@ -1465,8 +1465,30 @@ step("lorebook injection limits");
   assert.ok(unfiltered.details.injected_entries.includes("长夜纪年"), "筛选失败要退回本地召回的结果");
   assert.ok(unfiltered.summary.includes("all candidates kept"), "要说清楚退回了");
 
-  // 条数上限：十个都命中「夜色」的词条，命中的只注入八条，被砍的要**点名**
-  for (let i = 0; i < 10; i++) {
+  // 空正文 + 指令里提到关键词：也必须命中。
+  // 现代卡的关键词几乎都是人名/功法/地名，第一次出现往往就在**指令**里；只看已写正文时，
+  // 第一章（正文为空）永远匹配不到任何条目，整本关键词世界书等于全程静默（实测《道渊》就是）。
+  await call("novel_lorebook", {
+    action: "add",
+    project: reviewProject,
+    name: "换岗规矩",
+    keys: "换岗",
+    content: "换岗要敲三下灯楼。",
+  });
+  const emptyChapter = await call("novel_chapter", { action: "create", title: "空章", project: reviewProject });
+  const emptyId = emptyChapter.details?.chapter?.id ?? emptyChapter.details?.chapter_id;
+  const viaInstruction = await call("novel_context", {
+    project: reviewProject,
+    chapter: emptyId,
+    instruction: "写一次换岗",
+  });
+  assert.ok(
+    viaInstruction.details.injected_entries.includes("换岗规矩"),
+    "空章节时，指令里的关键词也要命中",
+  );
+  ok("keyword matching sees the instruction (first chapter has no body yet)");
+  // 条数上限：二十六个都命中「夜色」的词条，只注入 24 条，被砍的要**点名**
+  for (let i = 0; i < 26; i++) {
     await call("novel_lorebook", {
       action: "add",
       name: `上限词条${i}`,
@@ -1476,7 +1498,7 @@ step("lorebook injection limits");
   }
   const capped = await call("novel_context", { project: reviewProject, chapter: reviewChapter, instruction: "写夜色" });
   const keywordInjected = capped.details.injected_entries.filter((name) => name !== "灯火之界");
-  assert.equal(keywordInjected.length, 8, "命中条目按条数封顶（默认 8）");
+  assert.equal(keywordInjected.length, 24, "命中条目按条数封顶（默认 24）");
   assert.ok(capped.details.injected_entries.includes("灯火之界"), "常驻条目不占命中额度");
   assert.ok(capped.summary.includes("always-on (not capped)"), "常驻条目单独说明");
   assert.ok(capped.details.truncated_entries.length >= 2, "被砍的要如实报出数量");

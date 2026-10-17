@@ -53,9 +53,9 @@ export interface PluginConfig {
   reviewFormatChecks?: boolean;
   /** 同一章连续判不合格几次后不再建议重写、改为交给作者。默认 3；0 = 不设上限 */
   maxReviewAttempts?: number;
-  /** 命中词条的注入条数上限（常驻条目不占额度）。默认 8；0 = 不限 */
+  /** 命中词条的注入条数上限（常驻条目不占额度）。默认 24；0 = 不限 */
   maxInjectedLoreEntries?: number;
-  /** 命中词条的注入字符预算。默认 4000；0 = 不限 */
+  /** 命中词条的注入字符预算。默认 24000；0 = 不限（常驻条目不受它约束） */
   maxInjectedLoreChars?: number;
   /** novel_review 子 agent 的模型路由覆盖（留空 = 继承当前会话默认） */
   reviewProvider?: string;
@@ -128,8 +128,8 @@ export function resolveConfig(raw: PluginConfig = {}): NovelConfig {
     maxRepeatRunChars: count(raw.maxRepeatRunChars, 20, "maxRepeatRunChars"),
     reviewFormatChecks: bool(raw.reviewFormatChecks, true, "reviewFormatChecks"),
     maxReviewAttempts: count(raw.maxReviewAttempts, 3, "maxReviewAttempts"),
-    maxInjectedLoreEntries: count(raw.maxInjectedLoreEntries, 8, "maxInjectedLoreEntries"),
-    maxInjectedLoreChars: count(raw.maxInjectedLoreChars, 4000, "maxInjectedLoreChars"),
+    maxInjectedLoreEntries: count(raw.maxInjectedLoreEntries, 24, "maxInjectedLoreEntries"),
+    maxInjectedLoreChars: count(raw.maxInjectedLoreChars, 24000, "maxInjectedLoreChars"),
     ...(reviewProvider !== undefined ? { reviewProvider } : {}),
     ...(reviewModel !== undefined ? { reviewModel } : {}),
   };

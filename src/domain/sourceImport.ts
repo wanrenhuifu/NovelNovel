@@ -27,6 +27,10 @@ export interface ClassifiedEntry {
   channel: Channel;
   /** 为什么判成这个通道（面板上显示，便于人纠正） */
   reason: string;
+  /** ST 的 constant：有关键词也每回合都进 */
+  constant?: boolean;
+  /** ST 的 position：常驻块在角色设定之前/之后 */
+  position?: "before_char" | "after_char";
 }
 
 /** 卡的元信息（不注入，供面板/详情用） */
@@ -109,7 +113,14 @@ export function classifyEntry(name: string, content: string): { channel: Channel
 
 /** 把已规整的条目（name/keys/content/enabled）分类；空内容条目会被丢弃并记一条 note。 */
 export function classifyEntries(
-  raw: { name: string; keys: string; content: string; enabled: boolean }[],
+  raw: {
+    name: string;
+    keys: string;
+    content: string;
+    enabled: boolean;
+    constant?: boolean;
+    position?: "before_char" | "after_char";
+  }[],
   notes: string[],
 ): ClassifiedEntry[] {
   const out: ClassifiedEntry[] = [];
@@ -214,7 +225,14 @@ export function decomposeCard(
     creator: string;
     lorebookEntriesInCard: number;
   },
-  loreEntries: { name: string; keys: string; content: string; enabled: boolean }[],
+  loreEntries: {
+    name: string;
+    keys: string;
+    content: string;
+    enabled: boolean;
+    constant?: boolean;
+    position?: "before_char" | "after_char";
+  }[],
 ): DecomposedSource {
   const notes: string[] = [];
   const raw = readRawCard(character.rawData);
@@ -273,7 +291,14 @@ export function decomposeCard(
  */
 export function parseWorldBook(text: string): {
   name: string;
-  entries: { name: string; keys: string; content: string; enabled: boolean }[];
+  entries: {
+    name: string;
+    keys: string;
+    content: string;
+    enabled: boolean;
+    constant?: boolean;
+    position?: "before_char" | "after_char";
+  }[];
   notes: string[];
 } {
   const notes: string[] = [];
@@ -284,21 +309,36 @@ export function parseWorldBook(text: string): {
     throw new Error(`世界书不是合法 JSON：${(error as Error).message}`);
   }
 
-  const pickKeys = (value: unknown): string => {
+  const toKeys = (value: unknown): string => {
     if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string").join(", ");
     if (typeof value === "string") return value;
     return "";
+  };
+  /**
+   * `keys` 与 `key` 两份字段都可能存在，而实测《道渊》里 `key` 是**空数组**、真触发词在 `keys` 里。
+   * 所以不能 `key ?? keys`（空数组不是 null，会取到空、丢掉全部关键词），要取**非空**的那个。
+   */
+  const pickKeys = (record: Record<string, unknown>): string => {
+    const fromPlural = toKeys(record.keys);
+    return fromPlural.trim() !== "" ? fromPlural : toKeys(record.key);
   };
   const pickName = (record: Record<string, unknown>, fallback: string): string => {
     for (const candidate of [record.comment, record.name, record.entry_name]) {
       if (typeof candidate === "string" && candidate.trim() !== "") return candidate;
     }
-    const keys = pickKeys(record.key ?? record.keys);
+    const keys = pickKeys(record);
     return keys === "" ? fallback : keys.split(",")[0].trim();
   };
 
   const bag: unknown = parsed;
-  const rawEntries: { name: string; keys: string; content: string; enabled: boolean }[] = [];
+  const rawEntries: {
+    name: string;
+    keys: string;
+    content: string;
+    enabled: boolean;
+    constant?: boolean;
+    position?: "before_char" | "after_char";
+  }[] = [];
 
   const push = (record: unknown, fallbackName: string): void => {
     if (typeof record !== "object" || record === null) return;
@@ -308,9 +348,14 @@ export function parseWorldBook(text: string): {
     const enabled = entry.disable === true ? false : entry.enabled === false ? false : true;
     rawEntries.push({
       name: pickName(entry, fallbackName),
-      keys: pickKeys(entry.key ?? entry.keys),
+      keys: pickKeys(entry),
       content,
       enabled,
+      // 与卡导入同一套保真口径：constant / position 决定"每回合必进"与常驻块的位置
+      ...(entry.constant === true ? { constant: true } : {}),
+      ...(entry.position === "before_char" || entry.position === "after_char"
+        ? { position: entry.position }
+        : {}),
     });
   };
 

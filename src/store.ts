@@ -922,6 +922,9 @@ export class NovelStore {
         enabled: entry.enabled,
         source: record.id,
         channel: entry.channel,
+        // 世界书保真：constant 决定"有关键词也常驻"，position 决定常驻块位置
+        ...(entry.constant === true ? { constant: true } : {}),
+        ...(entry.position === undefined ? {} : { position: entry.position }),
       }));
     const merged = await this.addLoreEntries(session, projectId, injectable);
 

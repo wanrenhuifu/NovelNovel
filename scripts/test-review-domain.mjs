@@ -225,6 +225,24 @@ const mixed = rankLoreEntries([alwaysOnEntry, ...many], ctx, { maxEntries: 2, ma
 check("常驻条目占满额度之外", mixed.alwaysOn.map((e) => e.id), ["always"]);
 check("常驻条目不占命中额度", mixed.injected.length, 2);
 check("未命中的条目进 skipped", rankLoreEntries([entry({ id: "no", keys: "太阳" })], ctx, { maxEntries: 0, maxChars: 0 }).skipped.length, 1);
+// ST 的 constant：**有关键词也常驻**。实测《道渊》56 条 / 6.3 万字都属于这一类，
+// 若按关键词闸门走，卡的"规则 + 生成器 + 常驻世界"层基本进不了简报。
+const constantEntry = entry({ id: "const", keys: "永远不会出现在上下文里的词", name: "规则" });
+constantEntry.constant = true;
+const withConstant = rankLoreEntries([constantEntry], ctx, { maxEntries: 1, maxChars: 10 });
+check("constant 即使关键词没命中也是常驻", withConstant.alwaysOn.map((e) => e.id), ["const"]);
+check("constant 不占命中额度、也不被字符预算砍", withConstant.injected.length + withConstant.truncated.length, 0);
+
+// 常驻块按 position 排（before_char 在前），同位置按 id 稳定
+const before = entry({ id: "b", keys: "", name: "前" });
+before.position = "before_char";
+const after = entry({ id: "a", keys: "", name: "后" });
+after.position = "after_char";
+check(
+  "常驻块 before_char 排在 after_char 之前（且同位置按 id 稳定）",
+  rankLoreEntries([after, before, entry({ id: "c", keys: "", name: "默认" })], ctx, { maxEntries: 0, maxChars: 0 }).alwaysOn.map((e) => e.id),
+  ["b", "a", "c"],
+);
 
 console.log("--- 候选池筛选：只能删不能加 ---");
 const candidates = [entry({ id: "a" }), entry({ id: "b" }), entry({ id: "c" })];

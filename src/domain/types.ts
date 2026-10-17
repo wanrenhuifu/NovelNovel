@@ -57,6 +57,14 @@ export interface LoreEntry {
   source?: string;
   /** 注入通道（可选：缺省按 keys 是否为空推断，老数据不用迁移） */
   channel?: Channel;
+  /**
+   * SillyTavern 的 `constant`：**有关键词也每回合都进**。
+   * 实测《道渊》有 56 条这样的（共 6.3 万字），是卡的"规则 + 生成器 + 常驻世界"层——
+   * 只按关键词抽会把这一层基本丢掉。
+   */
+  constant?: boolean;
+  /** SillyTavern 的 `position`：常驻块放在角色设定之前还是之后（实测 303 after / 53 before） */
+  position?: "before_char" | "after_char";
 }
 
 /** 写作预设：控制系统提示词的组装方式，可导入 SillyTavern 预设 JSON */
