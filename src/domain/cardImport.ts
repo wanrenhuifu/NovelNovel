@@ -116,8 +116,10 @@ export function extractLorebookEntries(
         // 关键词需保持原文用于上下文匹配，不替换宏
         keys: keys.join(", "),
         content: replaceMacros(content, charName),
-        // 字段缺失视为启用，显式 false 才禁用
-        enabled: e.enabled !== false,
+        // 字段缺失视为启用；SillyTavern 的导出**两种写法都有**：`enabled: false` 与
+        // `disable: true`（这张卡前者、别的卡后者）。只认其中一种会把作者禁用的条目当生效，
+        // 于是被停用的规则也跟着每章注入。
+        enabled: e.enabled !== false && e.disable !== true,
         // ST 的 constant：有关键词也每回合都进（实测这张卡 56 条 / 6.3 万字，丢了等于丢掉卡的核心）
         ...(e.constant === true ? { constant: true } : {}),
         ...(e.position === "before_char" || e.position === "after_char"
