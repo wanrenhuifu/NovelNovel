@@ -1587,6 +1587,54 @@ step("sources");
   const loreNames = (await call("novel_lorebook", { action: "list" })).details.entries.map((e) => e.name);
   assert.ok(!loreNames.some((name) => name.includes("initvar")), "状态初值不能当词条混进世界书");
 
+  // 世界书浏览：342 条的设定集没有目录/检索就是用不了的书
+  const lorebookNow = (await call("novel_lorebook", { action: "list" })).details.entries.length;
+  const browseAll = await call("novel_source", { action: "entries" });
+  // 这一节跑在整套 e2e 的末尾，世界书里已有前面用例留下的条目——所以按实际条数断言，
+  // 但**必须等于**世界书条数：state / material 不进世界书，也就不该出现在浏览结果里。
+  assert.equal(browseAll.details.total, lorebookNow, "浏览的是世界书（与 novel_lorebook 口径一致）");
+  assert.equal(browseAll.details.entries.length, Math.min(lorebookNow, 20), "默认一页 20 条");
+  assert.ok(browseAll.summary.includes("设定"), "摘要要给出通道分布");
+  const onlyGameplay = await call("novel_source", { action: "entries", channel: "gameplay" });
+  assert.equal(onlyGameplay.details.matched, 1, "按通道过滤");
+  assert.equal(onlyGameplay.details.entries[0].name, "[mvu_update]", "筛出来的是那条 MVU 规则");
+  const searched = await call("novel_source", { action: "entries", query: "灯火" });
+  assert.ok(searched.details.matched >= 1, "按关键词搜索要能搜到");
+  assert.ok(
+    searched.details.entries.some((entry) => entry.name === "灯火之界"),
+    "搜索范围覆盖正文：命中「灯火之界」这个名字",
+  );
+  const paged = await call("novel_source", { action: "entries", from: 2, limit: 1 });
+  assert.equal(paged.details.entries.length, 1, "分页：一页一条");
+  assert.equal(paged.details.from, 2, "分页偏移按 1 起");
+  assert.ok(paged.summary.includes("第 2–2 条"), "摘要要说明当前页");
+  const constantOnly = await call("novel_source", {
+    action: "entries",
+    source: importedSource.details.source.id,
+    always_on: true,
+  });
+  assert.ok(
+    constantOnly.details.entries.every((entry) => entry.always_on),
+    "always_on=true 只返回常驻条目",
+  );
+  // 给 chapter + instruction → 每条说明"为什么进/不进这一章的简报"
+  const chapterForWhy = await call("novel_chapter", {
+    action: "create",
+    title: "为什么",
+    project: importedSource.details.project_id,
+  });
+  const whyChapterId = chapterForWhy.details?.chapter?.id ?? chapterForWhy.details?.chapter_id;
+  const withWhy = await call("novel_source", {
+    action: "entries",
+    chapter: whyChapterId,
+    instruction: "写一段关于长夜纪年的开场",
+    limit: 200,
+  });
+  const byName = new Map(withWhy.details.entries.map((entry) => [entry.name, entry.why]));
+  assert.ok(String(byName.get("灯火之界")).includes("常驻"), "无关键词的条目应报常驻");
+  assert.ok(String(byName.get("长夜纪年")).includes("命中"), "指令里出现关键词时应报命中");
+  // 这本书里的 [mvu_update] 没有关键词 → 常驻（与 constant 同一条通道），不是"命中"
+  assert.ok(String(byName.get("[mvu_update]")).includes("常驻"), "没有关键词的条目应报常驻");
   const listed = await call("novel_source", { action: "list" });
   assert.ok(listed.summary.includes("世界书"), "列表里应能看到这个世界书源");
   const shown = await call("novel_source", { action: "show", source: importedSource.details.source.id });

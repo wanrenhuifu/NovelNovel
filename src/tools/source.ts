@@ -12,6 +12,7 @@
  * 通道与状态的完整设计见 docs/design/sources-and-state.md。
  */
 import { CHANNEL_LABEL, INJECTABLE_CHANNELS, type Channel } from "../domain/sourceImport";
+import { rankLoreEntries, splitLoreKeys } from "../domain/prompt";
 import { lines, preview, TEXT_OUTPUT, textRender, type ToolDeps } from "./shared";
 
 export function registerSourceTool({ ctx, store, defineTool }: ToolDeps): void {
@@ -30,7 +31,7 @@ export function registerSourceTool({ ctx, store, defineTool }: ToolDeps): void {
         action: {
           type: "string",
           required: true,
-          enum: ["list", "show", "import", "enable", "disable"],
+          enum: ["list", "show", "entries", "import", "enable", "disable"],
           description: "What to do.",
         },
         project: {
@@ -43,11 +44,42 @@ export function registerSourceTool({ ctx, store, defineTool }: ToolDeps): void {
         },
         source: {
           type: "string",
-          description: "action=show/enable/disable: source id (exact or unique partial).",
+          description:
+            "Source id (exact or unique partial). Required for show/enable/disable; optional for entries (default: the whole project world book).",
+        },
+        channel: {
+          type: "string",
+          enum: ["lore", "style", "gameplay", "state", "cast", "material"],
+          description: "action=entries: only entries classified into this channel.",
+        },
+        always_on: {
+          type: "boolean",
+          description: "action=entries: true = only entries injected every turn (constant or no keys); false = only keyword-triggered ones.",
+        },
+        query: {
+          type: "string",
+          description: "action=entries: case-insensitive substring over name, keys and content.",
+        },
+        from: {
+          type: "number",
+          description: "action=entries: 1-based offset into the filtered list. Defaults to 1.",
+        },
+        limit: {
+          type: "number",
+          description: "action=entries: page size (default 20, max 200).",
+        },
+        chapter: {
+          type: "string",
+          description:
+            "action=entries: chapter id, title, or 1-based index. When given, each entry also reports whether this chapter would inject it and why.",
+        },
+        instruction: {
+          type: "string",
+          description: "action=entries: the instruction/goal you are about to write with (used together with chapter to judge keyword hits).",
         },
       },
       output: { schema: TEXT_OUTPUT, render: textRender },
-      isConcurrencySafe: (args) => args.action === "list" || args.action === "show",
+      isConcurrencySafe: (args) => args.action === "list" || args.action === "show" || args.action === "entries",
       async execute(args, exec) {
         const session = store.sessionOf(exec);
         const projectId = await store.resolveProjectId(session, args.project);
@@ -106,9 +138,122 @@ export function registerSourceTool({ ctx, store, defineTool }: ToolDeps): void {
           };
         }
 
-        // show / enable / disable 都需要先定位源
-        const wanted = args.source?.trim() ?? "";
-        if (wanted === "") throw new Error(`source is required for novel_source action=${args.action}`);
+        // 世界书浏览：342 条的设定集没有目录、没有检索就等于用不了。
+        // 这一支**只读**：按通道/常驻/关键词过滤 + 分页，带 chapter 时还会告诉你每条**为什么**会/不会
+        // 进这一章的简报（与被注入侧同一套判定：直接调 rankLoreEntries，不重复实现一遍匹配）。
+        if (args.action === "entries") {
+          const lorebook = await store.readLorebook(session, projectId);
+          let pool = lorebook;
+          let scope = "整本世界书";
+          const wantedSource = args.source?.trim() ?? "";
+          if (wantedSource !== "") {
+            const sources = await store.listSources(session, projectId);
+            const exact = sources.find((item) => item.id === wantedSource);
+            const partial = sources.filter(
+              (item) => item.name.includes(wantedSource) || item.id.startsWith(wantedSource),
+            );
+            const record = exact ?? (partial.length === 1 ? partial[0] : undefined);
+            if (record === undefined) {
+              throw new Error(
+                partial.length === 0
+                  ? `no source matches "${wantedSource}"`
+                  : `"${wantedSource}" is ambiguous: ${partial.map((item) => `${item.name} [${item.id}]`).join(", ")}`,
+              );
+            }
+            pool = lorebook.filter((entry) => entry.source === record.id);
+            scope = record.name;
+          }
+
+          const isAlwaysOn = (entry: (typeof lorebook)[number]): boolean =>
+            entry.constant === true || splitLoreKeys(entry.keys).length === 0;
+          const channelOf = (entry: (typeof lorebook)[number]): Channel => entry.channel ?? "lore";
+
+          // 先算整本（过滤前）的通道分布，给调用方一个方位感
+          const counts: Record<string, number> = {};
+          for (const entry of pool) counts[channelOf(entry)] = (counts[channelOf(entry)] ?? 0) + 1;
+
+          let filtered = pool;
+          if (args.channel !== undefined) {
+            filtered = filtered.filter((entry) => channelOf(entry) === args.channel);
+          }
+          if (args.always_on !== undefined) {
+            filtered = filtered.filter((entry) => isAlwaysOn(entry) === args.always_on);
+          }
+          const query = args.query?.trim().toLowerCase() ?? "";
+          if (query !== "") {
+            filtered = filtered.filter((entry) =>
+              `${entry.name}\n${entry.keys}\n${entry.content}`.toLowerCase().includes(query),
+            );
+          }
+
+          // 「为什么进简报」：给章就按注入侧的判定跑一遍（常驻 / 命中哪些关键词 / 没命中 / 已禁用）
+          let chapterLabel = "";
+          const why = new Map<string, string>();
+          if (args.chapter !== undefined && args.chapter.trim() !== "") {
+            const chapter = await store.readChapter(session, projectId, args.chapter.trim());
+            const tail = chapter.content.trim().slice(-2000);
+            const contextText = [tail, chapter.goal ?? "", args.instruction ?? ""]
+              .filter((part) => part.trim() !== "")
+              .join("\n");
+            const selection = rankLoreEntries(lorebook, contextText);
+            chapterLabel = chapter.title;
+            for (const entry of selection.alwaysOn) why.set(entry.id, "每回合都进（常驻）");
+            for (const entry of selection.injected) {
+              why.set(entry.id, `命中关键词（${entry.keys}）`);
+            }
+            for (const entry of selection.skipped) why.set(entry.id, "关键词没出现在本章上下文里");
+          }
+
+          const total = filtered.length;
+          const from = Math.max(1, Math.trunc(args.from ?? 1));
+          const limit = Math.min(200, Math.max(1, Math.trunc(args.limit ?? 20)));
+          const page = filtered.slice(from - 1, from - 1 + limit);
+          const summary = lines(
+            `${scope} · ${String(pool.length)} 条（${Object.entries(counts)
+              .map(([channel, count]) => `${CHANNEL_LABEL[channel as Channel] ?? channel} ${String(count)}`)
+              .join(" · ")}）`,
+            chapterLabel === "" ? null : `按「${chapterLabel}」判断：每条会/不会进简报及原因`,
+            total === 0
+              ? "没有符合条件的条目。"
+              : `第 ${String(from)}–${String(from + page.length - 1)} 条（共 ${String(total)} 条）：`,
+            ...page.map((entry) =>
+              lines(
+                `- ${entry.name}${entry.enabled ? "" : " (disabled)"}${entry.constant === true ? " [constant]" : ""}` +
+                  `${splitLoreKeys(entry.keys).length === 0 ? " [无关键词]" : ""}`,
+                `  ${CHANNEL_LABEL[channelOf(entry)]}${entry.keys.trim() === "" ? "" : ` · 关键词 ${entry.keys}`}`,
+                why.size > 0 ? `  → ${why.get(entry.id) ?? "不在本章的候选里（已禁用或内容为空）"}` : null,
+                `  ${preview(entry.content, 120)}`,
+              ),
+            ),
+            total > from - 1 + page.length ? `（还有 ${String(total - (from - 1 + page.length))} 条，用 from=${String(from + page.length)} 翻页）` : null,
+          );
+          return {
+            action: args.action,
+            summary,
+            details: {
+              project_id: projectId,
+              source: wantedSource === "" ? null : wantedSource,
+              total: pool.length,
+              matched: total,
+              counts,
+              from,
+              limit,
+              chapter: chapterLabel === "" ? null : chapterLabel,
+              entries: page.map((entry) => ({
+                id: entry.id,
+                name: entry.name,
+                channel: channelOf(entry),
+                constant: entry.constant === true,
+                keys: entry.keys,
+                enabled: entry.enabled,
+                always_on: isAlwaysOn(entry),
+                why: why.get(entry.id) ?? null,
+              })),
+            },
+          };
+        }
+
+        const wanted = args.source?.trim() ?? "";        if (wanted === "") throw new Error(`source is required for novel_source action=${args.action}`);
         const sources = await store.listSources(session, projectId);
         const exact = sources.find((item) => item.id === wanted);
         const partial = sources.filter((item) => item.name.includes(wanted) || item.id.startsWith(wanted));
