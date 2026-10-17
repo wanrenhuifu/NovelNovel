@@ -9,6 +9,7 @@ import { registerPresetTool } from "./preset";
 import { registerProjectTool } from "./project";
 import { registerReviewTool } from "./review";
 import { registerSkillTool } from "./skill";
+import { registerSourceTool } from "./source";
 
 export function registerTools(deps: ToolDeps): void {
   registerProjectTool(deps);
@@ -20,4 +21,5 @@ export function registerTools(deps: ToolDeps): void {
   registerContextTool(deps);
   registerReviewTool(deps);
   registerExportTool(deps);
+  registerSourceTool(deps);
 }

@@ -9,6 +9,17 @@ import type { LoreEntry, Preset } from "./domain/types";
 import { parseCharacterBytes } from "./domain/cardImport";
 import { buildCharacterPng, buildNovelDocument, safeName } from "./domain/export";
 import { parsePresetFile } from "./domain/presetImport";
+import {
+  channelCounts,
+  classifyEntries,
+  decomposeCard,
+  formatImportReport,
+  INJECTABLE_CHANNELS,
+  joinRules,
+  joinState,
+  parseWorldBook,
+  type DecomposedSource,
+} from "./domain/sourceImport";
 import { normalizeLoreKeys } from "./domain/prompt";
 import { computeReorder } from "./domain/reorder";
 import { searchChapters, type SearchMatch } from "./domain/search";
@@ -26,6 +37,7 @@ import {
   type StoredCharacter,
   type WorkspaceFile,
 } from "./types";
+import type { SourceRecord, StoredSource } from "./types";
 
 export interface NovelConfig {
   /** 数据根目录（相对工作目录） */
@@ -362,6 +374,17 @@ export class NovelStore {
     return `${this.projectDir(id)}/presets.json`;
   }
 
+  private sourcesDir(id: string): string {
+    return `${this.projectDir(id)}/sources`;
+  }
+
+  private sourcesIndexFile(id: string): string {
+    return `${this.sourcesDir(id)}/index.json`;
+  }
+
+  private sourceFile(id: string, sourceId: string): string {
+    return `${this.sourcesDir(id)}/${sourceId}.json`;
+  }
   private chapterDir(id: string): string {
     return `${this.projectDir(id)}/chapters`;
   }
@@ -782,6 +805,151 @@ export class NovelStore {
     await this.ops.writeJson(this.lorebookFile(projectId), entries, session, basis);
   }
 
+  // ── 资料源（sources）────────────────────────────────────────────────
+  // 设计见 docs/design/sources-and-state.md。第一刀只做：拆解 + 落盘 + 把**可注入通道**并进
+  // 世界书（带 source/channel）。规则区/状态层的注入在下一刀，所以这里不碰 prompt。
+
+  async listSources(session: FsSession, projectId: string): Promise<SourceRecord[]> {
+    const { value } = await this.readJsonVersioned<SourceRecord[]>(this.sourcesIndexFile(projectId), session);
+    return value ?? [];
+  }
+
+  async readSource(
+    session: FsSession,
+    projectId: string,
+    sourceId: string,
+  ): Promise<StoredSource | undefined> {
+    const { value } = await this.readJsonVersioned<StoredSource>(this.sourceFile(projectId, sourceId), session);
+    return value ?? undefined;
+  }
+
+  /**
+   * 导入一个资料源。
+   *
+   * 先按"卡"解析（PNG/JSON 卡都走 `parseCharacterBytes`），失败再按"独立世界书"解析——
+   * 这个顺序是有意的：卡解析器会按**魔数**嗅探，误判成本很低；而世界书 JSON 没有魔数，
+   * 反过来先试世界书会把卡当成世界书读出垃圾。
+   */
+  async importSource(
+    session: FsSession,
+    projectId: string,
+    filePath: string,
+  ): Promise<{ record: SourceRecord; payload: DecomposedSource; report: string[]; merged: { added: number; skipped: number } }> {
+    const bytes = await this.ops.readBytesOrNull(filePath, session);
+    if (bytes === null || bytes === undefined) throw new Error(`找不到要导入的文件：${filePath}`);
+
+    let payload: DecomposedSource;
+    let kind: "card" | "lore-book";
+    // **按结构判断，不要"先试卡、失败再试书"**：卡解析器对任意 JSON 不一定抛错（会得到一张空卡），
+    // 世界书就会被当成 0 条目的卡静默吞掉（端到端测试抓到过）。
+    // PNG 魔数 → 卡；JSON 顶层是数组或含 entries → 世界书；其余 → 卡。
+    const isPng =
+      bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    let structuredBook = false;
+    if (!isPng) {
+      try {
+        const parsedJson: unknown = JSON.parse(new TextDecoder().decode(bytes));
+        structuredBook =
+          Array.isArray(parsedJson) ||
+          (typeof parsedJson === "object" &&
+            parsedJson !== null &&
+            "entries" in (parsedJson as Record<string, unknown>));
+      } catch {
+        structuredBook = false;
+      }
+    }
+    try {
+      if (structuredBook) throw new Error("structured world book, not a character card");
+      const parsed = await parseCharacterBytes(bytes, filePath);
+      payload = decomposeCard(parsed.character, parsed.loreEntries);
+      kind = "card";
+    } catch (cardError) {
+      const text = new TextDecoder().decode(bytes);
+      let book;
+      try {
+        book = parseWorldBook(text);
+      } catch (bookError) {
+        throw new Error(
+          `既不是角色卡，也不是世界书：卡解析失败（${(cardError as Error).message}）；` +
+            `世界书解析失败（${(bookError as Error).message}）`,
+        );
+      }
+      const notes = [...book.notes];
+      const entries = classifyEntries(book.entries, notes);
+      payload = {
+        kind: "lore-book",
+        name: book.name,
+        meta: null,
+        entries,
+        rules: joinRules(entries),
+        initvarText: joinState(entries),
+        notes,
+      };
+      kind = "lore-book";
+    }
+
+    const record: SourceRecord = {
+      id: uid(),
+      kind,
+      name: payload.name,
+      enabled: true,
+      priority: await this.nextSourcePriority(session, projectId),
+      originFile: filePath,
+      originSize: bytes.length,
+      createdAt: Date.now(),
+      counts: channelCounts(payload.entries),
+    };
+    const stored: StoredSource = { record, payload };
+
+    // 先写源本体，再并入世界书：反过来的话，世界书写成功、源写失败会留下"孤儿词条"，
+    // 在面板上连来源都查不到（与 createChapter「先正文后索引」同一套顺序口径）。
+    await this.ops.writeJson(this.sourceFile(projectId, record.id), stored, session);
+    const index = await this.listSources(session, projectId);
+    await withStaleRetry(async () => {
+      const { value, basis } = await this.readJsonVersioned<SourceRecord[]>(this.sourcesIndexFile(projectId), session);
+      const current = value ?? [];
+      current.push(record);
+      await this.ops.writeJson(this.sourcesIndexFile(projectId), current, session, basis);
+    });
+    void index;
+
+    const injectable = payload.entries
+      .filter((entry) => INJECTABLE_CHANNELS.includes(entry.channel))
+      .map((entry) => ({
+        name: entry.name,
+        keys: entry.keys,
+        content: entry.content,
+        enabled: entry.enabled,
+        source: record.id,
+        channel: entry.channel,
+      }));
+    const merged = await this.addLoreEntries(session, projectId, injectable);
+
+    return { record, payload, report: formatImportReport(payload), merged: { added: merged.added, skipped: merged.skipped } };
+  }
+
+  async setSourceEnabled(
+    session: FsSession,
+    projectId: string,
+    sourceId: string,
+    enabled: boolean,
+  ): Promise<SourceRecord> {
+    return withStaleRetry(async () => {
+      const { value, basis } = await this.readJsonVersioned<SourceRecord[]>(this.sourcesIndexFile(projectId), session);
+      const records = value ?? [];
+      const record = records.find((item) => item.id === sourceId);
+      if (record === undefined) throw new Error(`没有这个资料源：${sourceId}`);
+      record.enabled = enabled;
+      await this.ops.writeJson(this.sourcesIndexFile(projectId), records, session, basis);
+      return record;
+    });
+  }
+
+  /** 新源排到最后（priority 越大越靠后；文风叠加时按它排） */
+  private async nextSourcePriority(session: FsSession, projectId: string): Promise<number> {
+    const records = await this.listSources(session, projectId);
+    return records.reduce((max, item) => Math.max(max, item.priority), 0) + 10;
+  }
   async addLoreEntries(
     session: FsSession,
     projectId: string,

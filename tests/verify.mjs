@@ -139,6 +139,7 @@ assert.deepEqual(toolNames, [
   "novel_project",
   "novel_review",
   "novel_skill",
+  "novel_source",
 ]);
 ok(`${toolNames.length} novel_* tools visible to the model`, toolNames.join(", "));
 
@@ -1535,6 +1536,45 @@ step("novel_review without a sub-agent service");
   ok("missing sub-agent service degrades to inconclusive instead of a silent pass");
 }
 
+// ── 资料源：独立世界书导入 → 拆解/分类/落盘/并入世界书（纯逻辑测不到"真落盘"这一层）
+step("sources");
+{
+  // 四种条目各一条：常驻设定、关键词设定、MVU 规则、变量初值
+  const bookPath = join(workspace, "book.json");
+  writeFileSync(
+    bookPath,
+    JSON.stringify({
+      entries: {
+        0: { key: [], comment: "灯火之界", content: "灯灭则夜入。" },
+        1: { key: ["长夜", "二十年"], comment: "长夜纪年", content: "长夜每二十年降临一次。" },
+        2: { key: [], comment: "[mvu_update]", content: "每回合更新 世界.当前时间" },
+        3: { key: [], comment: "[initvar] 初始", content: "世界:\n  当前时间: 未知" },
+      },
+    }),
+    "utf8",
+  );
+  const before = (await call("novel_lorebook", { action: "list" })).details.entries.length;
+  const importedSource = await call("novel_source", { action: "import", path: "book.json" });
+  const counts = importedSource.details.counts;
+  assert.equal(counts.state, 1, "初值条目应判成 state");
+  assert.equal(counts.gameplay, 1, "MVU 规则条目应判成 gameplay");
+  assert.equal(importedSource.details.merged.added, 3, "可注入通道 3 条（设定 2 + 玩法 1）");
+
+  const after = (await call("novel_lorebook", { action: "list" })).details.entries.length;
+  assert.equal(after - before, 3, "世界书应新增 3 条（state 不进世界书）");
+  const loreNames = (await call("novel_lorebook", { action: "list" })).details.entries.map((e) => e.name);
+  assert.ok(!loreNames.some((name) => name.includes("initvar")), "状态初值不能当词条混进世界书");
+
+  const listed = await call("novel_source", { action: "list" });
+  assert.ok(listed.summary.includes("世界书"), "列表里应能看到这个世界书源");
+  const shown = await call("novel_source", { action: "show", source: importedSource.details.source.id });
+  assert.ok(shown.summary.includes("通道明细"), "show 应给出通道明细");
+  assert.ok(shown.summary.includes("状态初值"), "show 应标出状态初值");
+
+  const disabled = await call("novel_source", { action: "disable", source: importedSource.details.source.id });
+  assert.equal(disabled.details.source.enabled, false, "disable 应改到记录上");
+  ok("world book import: classified into channels and merged with provenance");
+}
 // ── 卸载清理：工具与技能都必须随插件撤销（live patch 重载的前提）
 
 step("plugin unload");

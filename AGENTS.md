@@ -24,10 +24,11 @@ MIT 许可（`LICENSE`）。分发走 `npm pack` 的 tarball（`prepack` 自动�
 ```bash
 npm run build       # esbuild → lib/index.js + lib/client.js（lib/ 不入库；改完 src 必须重建，profile 加载的是产物）
 npm run typecheck   # tsc -p .（严格模式，noUnusedLocals/Parameters，零错误才过）
-npm test            # 14 个纯逻辑单测（9 个 domain + 5 个客户端）
+npm test            # 15 个纯逻辑单测（10 个 domain + 5 个客户端）
 node scripts/test-card-import.mjs   # 角色卡解析链路（PNG V2 / ccv3 双写 / JSON / V1 / 世界书并入 / 关键词拆分）
 node scripts/test-card-export.mjs   # 角色卡导出往返（编辑后再导出不回退、V1 字段不丢、非 PNG 头像占位、魔数嗅探）
 node scripts/test-preset-import.mjs # 预设导入解析 + story_string 渲染（含空变量报警与 {{char}}）+ 提示词组装 + 截断
+node scripts/test-source-domain.mjs # 资料源拆解与通道分类：真实卡条目名 → 通道判定、计数/拼接、拆卡、两种世界书形状
 node scripts/test-review-domain.mjs # 自检与词条治理：硬门槛（字数/格式/重复）+ 子 agent 结论归一化（各种坏形状）+ 注入排序与双上限 + 筛选只准删
 node scripts/test-search.mjs        # 章节全文搜索：命中/摘要/标题/上限/顺序/全半角/长度变化的小写折叠
 node scripts/test-reorder.mjs       # 章节排序：边界/位移/规范化/不可变性
@@ -41,7 +42,7 @@ node scripts/test-panel-interaction.mjs  # 真 DOM 挂载 + 真实点击/键盘�
 node scripts/test-client-bundle.mjs      # 产物形态 + 冒烟执行（物化 factory 并调 apply）
 npm run test:guard                  # 旧 harness 副本必须被拒绝加载（子进程里造一份假副本，不需要装插件）
 npm run test:hygiene                # 测试不许污染用户 profile + **每个装了插件的 profile 都验一遍**（含客户端产物）
-npm run test:dsh                    # 65 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
+npm run test:dsh                    # 66 项端到端检查：真实 harness 服务上驱动全部工具（不调模型）
 npm run test:compose                # 真 ClientModuleRegistry 组合：boot graph 含本包 + 能服务产物字节
 npm run test:bundle-runs            # 执行交付产物本身（跑 lib/client.js 的 factory 并调 apply）
 npm run test:primitives             # **升级 DSH 后的第一道闸**：从安装里的前端产物挖出外壳静态模块表，核对我们的 require 说明符都在表里；再核对 primitives 的导出名（0.2.1 起该包并入前端 bundle，导出名核对降级为"名字出现过"）
@@ -114,12 +115,13 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
 - `src/domain/` 纯逻辑，**不 import harness、不碰文件系统**（连 `node:*` 都不引，路径运算自己写）：
   `cardImport.ts`（角色卡解析 + 世界书提取）、`presetImport.ts`、`prompt.ts`（系统提示词组装、宏替换、
   词条注入与**注入治理**：`rankLoreEntries` 的相关度排序 + 条数/字符双上限、续写消息拼装）、
-  `review.ts`（自检的硬门槛、子 agent 提示词、结论归一化）、`loreFilter.ts`（候选池筛选的提示词与
+  `sourceImport.ts`（资料源拆解与**通道分类**：把一张现代社区卡拆成 设定/文风/玩法/状态/角色/素材，
+  每条带判定理由；含独立世界书的两种 JSON 形状解析）、`review.ts`（自检的硬门槛、子 agent 提示词、结论归一化）、`loreFilter.ts`（候选池筛选的提示词与
   **只准删**的归一化）、`progress.ts`（"已写 / 目标"字数的展示口径，三处共用）、`search.ts` / `reorder.ts`（id 泛化为 `string | number`）、
   `export.ts`（正文拼装 + 角色卡 PNG 再导出）、`png.ts`（chunk 读写 + deflate）、
   `skillFrontmatter.ts`（SKILL.md 解析/渲染，两条投递路径共用）、`skillPack.ts`（技能包解析 +
   项目根祖先链）、`utils.ts`、`types.ts`。
-- `tests/verify.mjs` 端到端（65 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
+- `tests/verify.mjs` 端到端（66 项）；`tests/harness-loader.mjs` 是测试侧的 harness 解析器
   （锚点顺序、`registerHarnessHook` 见「坑」）；`scripts/dsh-node-launcher.mjs` 负责用 DSH 自带的
   Electron Node 起测试，`scripts/verify-dsh.mjs` / `scripts/probe-dsh-perf.mjs` 是它的两个入口；
   `tests/fixtures/stale-harness.mjs` + `scripts/test-harness-guard.mjs` 是「旧副本必须被拒绝」的用例；
@@ -382,6 +384,20 @@ npm run test:perf                   # 性能探针（带 ctx.fs 调用计数）
   记录，`zlib.zstdDecompressSync`（Node 24）解开就能看出"输入到底有没有到宿主"——本次就是靠它
   一句 `isSeeded:false`（只有创建记录）把范围从"命令注册失败"缩小到"前端吞了输入"，
   再用服务器日志里的注册探针排除掉另一半。
+- **现代社区角色卡是「世界模块」，不是「一个人」**（这一条把之前的实现直接证伪了）：
+  实测《道渊》v5.4.2（`chara_card_v3`，10.25 MB）：`description` 只有 297 字（封面语）、`first_mes` **18,650 字**
+  （整个开篇剧本）、`personality/scenario/system_prompt/post_history_instructions` **全 0**、
+  `character_book` **356 条 / 286,833 字**（卡的正文＝设定集）、`extensions` 里 6 段运行时脚本
+  （MVU-offline v1.0.2 + Zod schema + **1.03 MB** 悬浮状态栏）与 **21 条正则**。
+  所以「导入一张卡 = 建一个角色」是错的：规则、生成器、变量初值全在 `character_book` 与 `extensions` 里。
+  现在的口径：`novel_source action=import` **拆解 + 按通道分类**（lore/style/gameplay/state/cast/material），
+  可注入通道并进世界书（带 `source`/`channel`），`state`/`material` 只留在源里；分类是启发式、
+  **一定会错**，所以每条带 `reason`、将来面板可逐条改。
+  实测结果（真卡）：356 条 → 保留 342 条（空条目丢弃）、设定 140 / 角色 188 / 玩法 11 / 状态 2 / 素材 1，
+  123 ms 完成；**`[initvar]` 与 `变量列表` 没有被误当词条**。
+  两个待跟进：① 规则条目现在也进了世界书（带 `channel=gameplay`），注入策略要等下一刀；
+  ② 面板上传上限 `MAX_UPLOAD_BYTES = 8 MB` **会拒掉这张 10.25 MB 的卡**（工具路径没有这个限制）。
+'
 - **写作预设**：`presetImport.ts` 按字段特征识别裸预设（`content`→system、`story_string`→context、
   `input_sequence`→instruct），含 `context`/`sysprompt`/`instruct` 子对象则当合订信封；reasoning 直接
   拒绝；**声明了字段但内容是空串的裸预设也拒绝**（导入它等于什么都不改，静默成功最误导）。

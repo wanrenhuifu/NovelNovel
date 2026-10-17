@@ -17,6 +17,7 @@
  * 顺序/标题/标签等元数据集中在 index.json，避免改名带来的文件churn。
  */
 import type { CardFields, Preset } from "./domain/types";
+import type { Channel, DecomposedSource } from "./domain/sourceImport";
 
 export interface NovelProject {
   /** 目录名，也是工具里引用的 projectId */
@@ -141,3 +142,26 @@ export interface ChapterIndex {
 }
 
 export const WORKSPACE_VERSION = 1;
+
+/** 资料源的落盘记录（`sources/index.json` 的一项） */
+export interface SourceRecord {
+  id: string;
+  /** card = 模块卡；lore-book = 独立世界书 */
+  kind: "card" | "lore-book";
+  name: string;
+  enabled: boolean;
+  /** 排序/覆盖优先级：文风叠加时按它排，设定同名冲突时高者覆盖 */
+  priority: number;
+  /** 原始文件路径（只记录，不复制原件——10 MB 的卡复制两份没必要） */
+  originFile: string;
+  originSize: number;
+  createdAt: number;
+  /** 导入时判出的通道计数，便于列表直接显示 */
+  counts: Record<Channel, number>;
+}
+
+/** 一个资料源的全部内容（`sources/<id>.json`） */
+export interface StoredSource {
+  record: SourceRecord;
+  payload: DecomposedSource;
+}
